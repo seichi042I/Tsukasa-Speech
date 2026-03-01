@@ -512,10 +512,12 @@ class ADPM2Sampler(Sampler):
     def forward(
         self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
     ) -> Tensor:
-        x = sigmas[0] * noise
+        # Pre-convert all sigma values to Python floats in one sync point
+        sigmas_list = sigmas.tolist()
+        x = sigmas_list[0] * noise
         # Denoise to sample
         for i in range(num_steps - 1):
-            x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+            x = self.step(x, fn=fn, sigma=sigmas_list[i], sigma_next=sigmas_list[i + 1])  # type: ignore # noqa
         return x
 
     def inpaint(
@@ -527,18 +529,19 @@ class ADPM2Sampler(Sampler):
         num_steps: int,
         num_resamples: int,
     ) -> Tensor:
-        x = sigmas[0] * torch.randn_like(source)
+        sigmas_list = sigmas.tolist()
+        x = sigmas_list[0] * torch.randn_like(source)
 
         for i in range(num_steps - 1):
             # Noise source to current noise level
-            source_noisy = source + sigmas[i] * torch.randn_like(source)
+            source_noisy = source + sigmas_list[i] * torch.randn_like(source)
             for r in range(num_resamples):
                 # Merge noisy source and current then denoise
                 x = source_noisy * mask + x * ~mask
-                x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
+                x = self.step(x, fn=fn, sigma=sigmas_list[i], sigma_next=sigmas_list[i + 1])  # type: ignore # noqa
                 # Renoise if not last resample step
                 if r < num_resamples - 1:
-                    sigma = sqrt(sigmas[i] ** 2 - sigmas[i + 1] ** 2)
+                    sigma = sqrt(sigmas_list[i] ** 2 - sigmas_list[i + 1] ** 2)
                     x = x + sigma * torch.randn_like(x)
 
         return source * mask + x * ~mask

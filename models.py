@@ -368,12 +368,7 @@ class TextEncoder(nn.Module):
             x.masked_fill_(m, 0.0)
             
         x = x.transpose(1, 2)  # [B, T, chn]
-        
 
-        input_lengths = input_lengths.cpu().numpy()
-        
-
-        
         x = self.prepare_projection(x)
 
         # x = nn.utils.rnn.pack_padded_sequence(
@@ -664,16 +659,11 @@ class ProsodyPredictor(nn.Module):
             
             batch_size = d.shape[0]
             text_size = d.shape[1]
-            
+
             # predict duration
-            
-            
-            input_lengths = text_lengths.cpu().numpy()
-        
-            
             # x = nn.utils.rnn.pack_padded_sequence(
             #     d, input_lengths, batch_first=True, enforce_sorted=False)
-            
+
             x = d # this dude can handle variable seq len so no need for padding
 
             
@@ -780,10 +770,9 @@ class DurationEncoder(nn.Module):
                 x = F.dropout(x, p=self.dropout, training=self.training)
                 x = x.transpose(-1, -2)
                 
-                x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
-
+                x_pad = torch.zeros(x.shape[0], x.shape[1], m.shape[-1], device=x.device, dtype=x.dtype)
                 x_pad[:, :, :x.shape[-1]] = x
-                x = x_pad.to(x.device)
+                x = x_pad
         
         return x.transpose(-1, -2)
     

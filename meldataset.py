@@ -243,7 +243,7 @@ class Collater(object):
             ref_mels[bid, :, :ref_mel_size] = ref_mel
             
             ref_labels[bid] = ref_label
-            waves[bid] = wave
+            waves[bid] = torch.from_numpy(wave).float() if isinstance(wave, np.ndarray) else wave
 
         return waves, texts, input_lengths, ref_texts, ref_lengths, mels, output_lengths, ref_mels
 
@@ -258,8 +258,10 @@ def build_dataloader(path_list,
                      num_workers=1,
                      device='cpu',
                      collate_config={},
-                     dataset_config={}):
-    
+                     dataset_config={},
+                     persistent_workers=False,
+                     prefetch_factor=None):
+
     dataset = FilePathDataset(path_list, root_path, OOD_data=OOD_data, min_length=min_length, validation=validation, **dataset_config)
     collate_fn = Collater(**collate_config)
     data_loader = DataLoader(dataset,
@@ -268,7 +270,9 @@ def build_dataloader(path_list,
                              num_workers=num_workers,
                              drop_last=True,
                              collate_fn=collate_fn,
-                             pin_memory=(device != 'cpu'))
+                             pin_memory=(device != 'cpu'),
+                             persistent_workers=persistent_workers if num_workers > 0 else False,
+                             prefetch_factor=prefetch_factor if num_workers > 0 else None)
 
     return data_loader
 

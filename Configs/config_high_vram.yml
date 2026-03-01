@@ -23,6 +23,10 @@ epochs_2nd: 50
 epochs: 50
 batch_size: 4
 max_len: 2500
+length_bucket: true           # Enable length-based bucket batching
+num_buckets: 4                # Number of length buckets (quartile split)
+min_batch_size: 2             # Minimum batch size for longest bucket
+max_batch_size: 12            # Maximum batch size for shortest bucket
 pretrained_model: "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth"
 second_stage_load_pretrained: true
 load_only_params: true

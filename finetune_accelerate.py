@@ -182,6 +182,7 @@ def main(config_path):
     device = 'cuda'
 
     cache_dir = os.environ.get('TSUKASA_CACHE_DIR', '/tmp/wave_cache')
+    length_cache_path = osp.join(log_dir, 'mel_lengths.json')
 
     train_dataloader = build_dataloader(train_list,
                                         root_path,
@@ -193,7 +194,12 @@ def main(config_path):
                                         device=device,
                                         persistent_workers=True,
                                         prefetch_factor=2,
-                                        speaker_balanced=True)
+                                        speaker_balanced=True,
+                                        length_bucket=config.get('length_bucket', False),
+                                        num_buckets=config.get('num_buckets', 4),
+                                        max_batch_size=config.get('max_batch_size', None),
+                                        min_batch_size=config.get('min_batch_size', 2),
+                                        length_cache_path=length_cache_path)
 
     val_dataloader = build_dataloader(val_list,
                                       root_path,

@@ -1,6 +1,7 @@
 #coding: utf-8
 import os
 import os.path as osp
+import json
 import math
 import time
 import random
@@ -84,6 +85,8 @@ class FilePathDataset(torch.utils.data.Dataset):
         mel_params = MEL_PARAMS
 
         _data_list = [l.strip().split('|') for l in data_list]
+        # Filter out entries with parenthesized non-verbal sounds (e.g. "(toiki)")
+        _data_list = [data for data in _data_list if len(data) >= 2 and '(' not in data[1] and ')' not in data[1]]
         self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
         self.text_cleaner = TextCleaner()
         self.sr = sr
@@ -337,6 +340,217 @@ class SpeakerBalancedBatchSampler(Sampler):
             yield batch
 
 
+class LengthBucketBatchSampler(Sampler):
+    """Dynamic batch sampler with length-based bucketing.
+
+    Organizes samples into N buckets by mel-spectrogram length (percentile boundaries).
+    Each bucket gets a dynamic batch size inversely proportional to its average
+    sample length, targeting constant total mel frames per batch.
+
+    Benefits:
+    - Consistent VRAM usage across batches (no spikes from all-long batches)
+    - Minimal padding waste (similar lengths within each batch)
+    - Speaker balance maintained within each bucket via round-robin
+    - Batch order shuffled across buckets to avoid length patterns
+
+    Example with num_buckets=4, base_batch_size=4:
+        Bucket 0 (short):  avg=200 frames, batch_size=8
+        Bucket 1 (medium): avg=400 frames, batch_size=4
+        Bucket 2 (long):   avg=600 frames, batch_size=3
+        Bucket 3 (longest): avg=1000 frames, batch_size=2
+    """
+
+    def __init__(self, data_list, root_path, base_batch_size,
+                 num_buckets=4, seed=42, drop_last=True,
+                 max_batch_size=None, min_batch_size=2,
+                 speaker_balanced=True, length_cache_path=None):
+        self.seed = seed
+        self.drop_last = drop_last
+        self.epoch = 0
+        self.num_buckets = num_buckets
+        self.min_batch_size = min_batch_size
+        self.max_batch_size = max_batch_size
+        self.speaker_balanced = speaker_balanced
+        self.data_list = data_list
+
+        # Pre-compute mel lengths for all samples
+        mel_lengths = self._compute_lengths(data_list, root_path, length_cache_path)
+        self.mel_lengths = np.array(mel_lengths)
+
+        # Create buckets by percentile boundaries
+        percentiles = np.linspace(0, 100, num_buckets + 1)[1:-1]  # e.g. [25, 50, 75]
+        boundaries = np.percentile(self.mel_lengths, percentiles)
+        bucket_ids = np.digitize(self.mel_lengths, boundaries)  # 0..num_buckets-1
+
+        self.buckets = [[] for _ in range(num_buckets)]
+        for idx, bid in enumerate(bucket_ids):
+            self.buckets[bid].append(idx)
+
+        # Remove empty buckets (can happen with degenerate length distributions)
+        self.buckets = [b for b in self.buckets if len(b) > 0]
+        self.num_buckets = len(self.buckets)
+
+        # Target tokens = base_batch_size × median length
+        median_length = float(np.median(self.mel_lengths))
+        self.target_tokens = base_batch_size * median_length
+
+        # Dynamic batch size per bucket
+        self.bucket_batch_sizes = []
+        for bucket in self.buckets:
+            avg_len = float(np.mean(self.mel_lengths[bucket]))
+            bs = max(self.min_batch_size, int(round(self.target_tokens / avg_len)))
+            if self.max_batch_size:
+                bs = min(bs, self.max_batch_size)
+            self.bucket_batch_sizes.append(bs)
+
+        # Per-bucket speaker grouping for round-robin
+        if speaker_balanced:
+            self.bucket_speaker_map = []
+            for bucket in self.buckets:
+                smap = defaultdict(list)
+                for idx in bucket:
+                    sid = str(data_list[idx][2])
+                    smap[sid].append(idx)
+                self.bucket_speaker_map.append(smap)
+
+        # Compute total batches
+        self._total_batches = 0
+        for bucket, bs in zip(self.buckets, self.bucket_batch_sizes):
+            if drop_last:
+                self._total_batches += len(bucket) // bs
+            else:
+                self._total_batches += math.ceil(len(bucket) / bs)
+
+        # Log statistics
+        total_samples = len(data_list)
+        logger.info(
+            "LengthBucketBatchSampler: %d samples -> %d buckets, "
+            "target_tokens=%d, total_batches=%d",
+            total_samples, self.num_buckets,
+            int(self.target_tokens), self._total_batches)
+        for b in range(self.num_buckets):
+            lengths = self.mel_lengths[self.buckets[b]]
+            est_tokens = int(np.mean(lengths) * self.bucket_batch_sizes[b])
+            logger.info(
+                "  Bucket %d: %d samples (%.1f%%), mel_len=[%d..%d] avg=%.0f, "
+                "batch_size=%d, est_tokens/batch=%d",
+                b, len(self.buckets[b]),
+                100 * len(self.buckets[b]) / total_samples,
+                int(lengths.min()), int(lengths.max()), np.mean(lengths),
+                self.bucket_batch_sizes[b], est_tokens)
+
+    @staticmethod
+    def _compute_lengths(data_list, root_path, cache_path):
+        """Pre-compute mel frame counts using audio file headers (fast, no decoding)."""
+        if cache_path and osp.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    cached = json.load(f)
+                if len(cached) == len(data_list):
+                    logger.info("Loaded mel length cache (%d entries) from %s",
+                                len(cached), cache_path)
+                    return cached
+                logger.warning("Length cache size mismatch (%d vs %d), recomputing",
+                              len(cached), len(data_list))
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        logger.info("Scanning audio lengths for %d files...", len(data_list))
+        hop_length = 300
+        padding_samples = 10000  # 5000 start + 5000 end silence
+        mel_lengths = []
+
+        for idx, item in enumerate(data_list):
+            wav_path = item[0]
+            full_path = osp.join(root_path, wav_path) if root_path else wav_path
+            try:
+                info = sf.info(full_path)
+                frames = info.frames
+                if info.samplerate != 24000:
+                    frames = int(frames * 24000 / info.samplerate)
+                mel_len = (frames + padding_samples) // hop_length
+                mel_len -= mel_len % 2  # even length
+            except Exception as e:
+                if idx < 5:
+                    logger.warning("Cannot read %s: %s", wav_path, e)
+                mel_len = 500
+            mel_lengths.append(mel_len)
+
+            if (idx + 1) % 50000 == 0:
+                logger.info("  ...scanned %d / %d", idx + 1, len(data_list))
+
+        logger.info("Length scan complete: min=%d, max=%d, median=%.0f mel frames",
+                     min(mel_lengths), max(mel_lengths), np.median(mel_lengths))
+
+        if cache_path:
+            try:
+                cache_dir = osp.dirname(cache_path)
+                if cache_dir:
+                    os.makedirs(cache_dir, exist_ok=True)
+                with open(cache_path, 'w') as f:
+                    json.dump(mel_lengths, f)
+                logger.info("Saved mel length cache to %s", cache_path)
+            except IOError as e:
+                logger.warning("Failed to save length cache: %s", e)
+
+        return mel_lengths
+
+    def set_epoch(self, epoch):
+        """Set epoch for reproducible per-epoch shuffling."""
+        self.epoch = epoch
+
+    def __len__(self):
+        return self._total_batches
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        all_batches = []
+
+        for b in range(self.num_buckets):
+            bs = self.bucket_batch_sizes[b]
+
+            if self.speaker_balanced:
+                # Round-robin through speakers within this bucket
+                speaker_map = self.bucket_speaker_map[b]
+                speaker_ids = list(speaker_map.keys())
+                rng.shuffle(speaker_ids)
+
+                pools = {}
+                positions = {}
+                for sid in speaker_ids:
+                    pool = list(speaker_map[sid])
+                    rng.shuffle(pool)
+                    pools[sid] = pool
+                    positions[sid] = 0
+
+                ordered = []
+                ptr = 0
+                for _ in range(len(self.buckets[b])):
+                    sid = speaker_ids[ptr % len(speaker_ids)]
+                    if positions[sid] >= len(pools[sid]):
+                        rng.shuffle(pools[sid])
+                        positions[sid] = 0
+                    ordered.append(pools[sid][positions[sid]])
+                    positions[sid] += 1
+                    ptr += 1
+            else:
+                ordered = list(self.buckets[b])
+                rng.shuffle(ordered)
+
+            # Create batches from ordered samples
+            for start in range(0, len(ordered), bs):
+                batch = ordered[start:start + bs]
+                if self.drop_last and len(batch) < bs:
+                    break
+                all_batches.append(batch)
+
+        # Shuffle batch order across all buckets
+        rng.shuffle(all_batches)
+
+        for batch in all_batches:
+            yield batch
+
+
 def build_dataloader(path_list,
                      root_path,
                      validation=False,
@@ -349,7 +563,12 @@ def build_dataloader(path_list,
                      dataset_config={},
                      persistent_workers=False,
                      prefetch_factor=None,
-                     speaker_balanced=False):
+                     speaker_balanced=False,
+                     length_bucket=False,
+                     num_buckets=4,
+                     max_batch_size=None,
+                     min_batch_size=2,
+                     length_cache_path=None):
 
     dataset = FilePathDataset(path_list, root_path, OOD_data=OOD_data, min_length=min_length, validation=validation, **dataset_config)
     collate_fn = Collater(**collate_config)
@@ -357,7 +576,24 @@ def build_dataloader(path_list,
     pw = persistent_workers if num_workers > 0 else False
     pf = prefetch_factor if num_workers > 0 else None
 
-    if speaker_balanced and not validation:
+    if length_bucket and not validation:
+        batch_sampler = LengthBucketBatchSampler(
+            dataset.data_list, root_path,
+            base_batch_size=batch_size,
+            num_buckets=num_buckets,
+            speaker_balanced=speaker_balanced,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            length_cache_path=length_cache_path,
+            drop_last=True)
+        data_loader = DataLoader(dataset,
+                                 batch_sampler=batch_sampler,
+                                 num_workers=num_workers,
+                                 collate_fn=collate_fn,
+                                 pin_memory=(device != 'cpu'),
+                                 persistent_workers=pw,
+                                 prefetch_factor=pf)
+    elif speaker_balanced and not validation:
         batch_sampler = SpeakerBalancedBatchSampler(
             dataset.data_list, batch_size=batch_size, drop_last=True)
         data_loader = DataLoader(dataset,

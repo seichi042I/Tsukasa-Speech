@@ -74,6 +74,11 @@ def _phonemize_single(item):
     if len(japanese_text) < 2:
         return None, f"Text too short: {filename} -> '{japanese_text}'"
 
+    # Skip non-verbal sounds enclosed in parentheses, e.g. (泣き声), (溜息)
+    import re
+    if re.fullmatch(r'[（(].+?[)）]', japanese_text.strip()):
+        return None, f"Non-verbal sound: {filename} -> '{japanese_text}'"
+
     try:
         from Utils.phonemize.mixed_phon import smart_phonemize
         ipa_text = smart_phonemize(japanese_text)
@@ -81,6 +86,10 @@ def _phonemize_single(item):
             return None, f"Empty phonemization: {filename} -> '{japanese_text}'"
     except Exception as e:
         return None, f"ERROR phonemizing {filename}: {e}"
+
+    # Skip entries where IPA text contains parenthesized non-verbal sounds
+    if '(' in ipa_text or ')' in ipa_text or '（' in ipa_text or '）' in ipa_text:
+        return None, f"Non-verbal sound in IPA: {filename} -> '{ipa_text}'"
 
     entry = f"{wav_rel_path}|{ipa_text}|{speaker_id}"
     return entry, None

@@ -121,7 +121,9 @@ class SLMAdversarialLoss(torch.nn.Module):
             # get ground truth clips
             random_start = np.random.randint(0, mel_length_gt - mel_len)
             y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
-            wav.append(torch.from_numpy(y).to(ref_text.device))
+            if isinstance(y, np.ndarray):
+                y = torch.from_numpy(y)
+            wav.append(y.to(ref_text.device))
             
             if len(wav) >= self.batch_percentage * len(waves): # prevent OOM due to longer lengths
                 break

@@ -311,11 +311,11 @@ class WavLMLoss(torch.nn.Module):
                 y_rec_embeddings = self.wavlm.encoder(y_rec.to(torch.bfloat16), output_hidden_states=True).hidden_states
 
 
-            floss = 0
-            for er, eg in zip([e.to(torch.float32) for e in wav_embeddings], [e.to(torch.float32) for e in y_rec_embeddings]):
-                floss += torch.mean(torch.abs(er - eg))
-            
-            return floss.mean()
+            wav_stack = torch.stack(wav_embeddings).to(torch.float32)
+            rec_stack = torch.stack(y_rec_embeddings).to(torch.float32)
+            floss = torch.mean(torch.abs(wav_stack - rec_stack))
+
+            return floss
 
 
 

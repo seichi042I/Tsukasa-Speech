@@ -181,14 +181,18 @@ def main(config_path):
     train_list, val_list = get_data_path_list(train_path, val_path)
     device = 'cuda'
 
+    cache_dir = os.environ.get('TSUKASA_CACHE_DIR', '/tmp/wave_cache')
+
     train_dataloader = build_dataloader(train_list,
                                         root_path,
                                         OOD_data=OOD_data,
                                         min_length=min_length,
                                         batch_size=batch_size,
-                                        num_workers=0,
-                                        dataset_config={},
-                                        device=device)
+                                        num_workers=4,
+                                        dataset_config={'cache_dir': cache_dir},
+                                        device=device,
+                                        persistent_workers=True,
+                                        prefetch_factor=2)
 
     val_dataloader = build_dataloader(val_list,
                                       root_path,
@@ -196,9 +200,11 @@ def main(config_path):
                                       min_length=min_length,
                                       batch_size=batch_size,
                                       validation=True,
-                                      num_workers=0,
+                                      num_workers=2,
                                       device=device,
-                                      dataset_config={})
+                                      dataset_config={'cache_dir': cache_dir},
+                                      persistent_workers=True,
+                                      prefetch_factor=2)
     
 
     with accelerator.main_process_first():
@@ -431,11 +437,12 @@ def main(config_path):
 
             # compute the style of the entire utterance
             # this operation cannot be done in batch because of the avgpool layer (may need to work on masked avgpool)
+            mel_lengths_list = mel_input_length.tolist()
             ss = []
             gs = []
-            for bib in range(len(mel_input_length)):
-                mel_length = int(mel_input_length[bib].item())
-                mel = mels[bib, :, :mel_input_length[bib]]
+            for bib in range(len(mel_lengths_list)):
+                mel_length = int(mel_lengths_list[bib])
+                mel = mels[bib, :, :mel_length]
                 # pad short mels to minimum length for style encoder conv
                 if mel.size(-1) < 80:
                     mel = F.pad(mel, (0, 80 - mel.size(-1)))
@@ -456,7 +463,8 @@ def main(config_path):
                 num_steps = np.random.randint(3, 5)
                 
                 if model_params.diffusion.dist.estimate_sigma_data:
-                    unwrap(model.diffusion).diffusion.sigma_data = s_trg.std(axis=-1).mean().item() # batch-wise std estimation
+                    with torch.no_grad():
+                        unwrap(model.diffusion).diffusion.sigma_data = s_trg.std(dim=-1).mean().item()
                     running_std.append(unwrap(model.diffusion).diffusion.sigma_data)
                     
                 if multispeaker:
@@ -489,25 +497,26 @@ def main(config_path):
                                                     s2s_attn_mono, 
                                                     text_mask)
                 
-            mel_len_st = int(mel_input_length.min().item() / 2 - 1)
-            mel_len = min(int(mel_input_length.min().item() / 2 - 1), max_len // 2)
+            mel_min_len = int(mel_input_length.min().item())
+            mel_len_st = mel_min_len // 2 - 1
+            mel_len = min(mel_min_len // 2 - 1, max_len // 2)
             en = []
             gt = []
             p_en = []
             wav = []
             st = []
-            
-            for bib in range(len(mel_input_length)):
-                mel_length = int(mel_input_length[bib].item() / 2)
+
+            for bib in range(len(mel_lengths_list)):
+                mel_length = int(mel_lengths_list[bib]) // 2
 
                 random_start = np.random.randint(0, mel_length - mel_len)
                 en.append(asr[bib, :, random_start:random_start+mel_len])
                 p_en.append(p[bib, :, random_start:random_start+mel_len])
                 gt.append(mels[bib, :, (random_start * 2):((random_start+mel_len) * 2)])
-                
+
                 y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
-                wav.append(torch.from_numpy(y).to(device))
-                
+                wav.append(y.to(device))
+
                 # style reference (better to be different from the GT)
                 random_start = np.random.randint(0, mel_length - mel_len_st)
                 st.append(mels[bib, :, (random_start * 2):((random_start+mel_len_st) * 2)])
@@ -564,12 +573,12 @@ def main(config_path):
             for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
                 _s2s_pred = _s2s_pred[:_text_length, :]
                 _text_input = _text_input[:_text_length].long()
-                _s2s_trg = torch.zeros_like(_s2s_pred)
-                for p in range(_s2s_trg.shape[0]):
-                    _s2s_trg[p, :_text_input[p]] = 1
+                # vectorized target construction: _s2s_trg[p, c] = 1 if c < _text_input[p]
+                cols = torch.arange(_s2s_pred.shape[1], device=_s2s_pred.device)
+                _s2s_trg = (cols.unsqueeze(0) < _text_input.unsqueeze(1)).float()
                 _dur_pred = torch.sigmoid(_s2s_pred).sum(axis=1)
 
-                loss_dur += F.l1_loss(_dur_pred[1:_text_length-1], 
+                loss_dur += F.l1_loss(_dur_pred[1:_text_length-1],
                                        _text_input[1:_text_length-1])
                 loss_ce += F.binary_cross_entropy_with_logits(_s2s_pred.flatten(), _s2s_trg.flatten())
 
@@ -750,12 +759,13 @@ def main(config_path):
 
                         d_gt = s2s_attn_mono.sum(axis=-1).detach()
 
+                    val_mel_lengths = mel_input_length.tolist()
                     ss = []
                     gs = []
 
-                    for bib in range(len(mel_input_length)):
-                        mel_length = int(mel_input_length[bib].item())
-                        mel = mels[bib, :, :mel_input_length[bib]]
+                    for bib in range(len(val_mel_lengths)):
+                        mel_length = int(val_mel_lengths[bib])
+                        mel = mels[bib, :, :mel_length]
                         if mel.size(-1) < 80:
                             mel = F.pad(mel, (0, 80 - mel.size(-1)))
                         s = model.predictor_encoder(mel.unsqueeze(0).unsqueeze(1))
@@ -777,8 +787,8 @@ def main(config_path):
                     # mel_len = int(mel_input_length.min().item() / 2 - 1)
                     
                     mel_input_length_all = accelerator.gather(mel_input_length) # for balanced load
-                    mel_len = min([int(mel_input_length_all.min().item() / 2 - 1), max_len // 2])
-                    
+                    mel_len = min(int(mel_input_length_all.min().item() / 2 - 1), max_len // 2)
+
                     mel_len_st = int(mel_input_length.min().item() / 2 - 1)
                     en = []
                     gt = []
@@ -786,8 +796,8 @@ def main(config_path):
                     p_en = []
                     wav = []
 
-                    for bib in range(len(mel_input_length)):
-                        mel_length = int(mel_input_length[bib].item() / 2)
+                    for bib in range(len(val_mel_lengths)):
+                        mel_length = int(val_mel_lengths[bib]) // 2
 
                         random_start = np.random.randint(0, mel_length - mel_len)
                         en.append(asr[bib, :, random_start:random_start+mel_len])
@@ -795,7 +805,7 @@ def main(config_path):
 
                         gt.append(mels[bib, :, (random_start * 2):((random_start+mel_len) * 2)])
                         y = waves[bib][(random_start * 2) * 300:((random_start+mel_len) * 2) * 300]
-                        wav.append(torch.from_numpy(y).to(device))
+                        wav.append(y.to(device))
 
                     wav = torch.stack(wav).float().detach()
 
@@ -814,11 +824,10 @@ def main(config_path):
                     for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
                         _s2s_pred = _s2s_pred[:_text_length, :]
                         _text_input = _text_input[:_text_length].long()
-                        _s2s_trg = torch.zeros_like(_s2s_pred)
-                        for bib in range(_s2s_trg.shape[0]):
-                            _s2s_trg[bib, :_text_input[bib]] = 1
+                        cols = torch.arange(_s2s_pred.shape[1], device=_s2s_pred.device)
+                        _s2s_trg = (cols.unsqueeze(0) < _text_input.unsqueeze(1)).float()
                         _dur_pred = torch.sigmoid(_s2s_pred).sum(axis=1)
-                        loss_dur += F.l1_loss(_dur_pred[1:_text_length-1], 
+                        loss_dur += F.l1_loss(_dur_pred[1:_text_length-1],
                                                _text_input[1:_text_length-1])
 
                     loss_dur /= texts.size(0)

@@ -15,14 +15,14 @@
 
 log_dir: "Data/output/LowVRAM"
 first_stage_path: "first_stage.pth"
-save_freq: 2
+save_freq: 1
 log_interval: 10
 device: "cuda"
 epochs_1st: 100
 epochs_2nd: 50
 epochs: 50          # used by finetune_accelerate.py
 batch_size: 2
-max_len: 200        # ~2.5s of audio at 24kHz with hop_length=300
+max_len: 2500       # ~31s of audio at 24kHz with hop_length=300
 pretrained_model: "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth"
 second_stage_load_pretrained: true
 load_only_params: true
@@ -92,7 +92,7 @@ model_params:
       std: 1.0
 
 loss_params:
-  lambda_mel: 5.
+  lambda_mel: 10.
   lambda_gen: 1.
   lambda_slm: 0.       # DISABLED: saves ~3-5GB VRAM by not loading Whisper
 
@@ -107,7 +107,7 @@ loss_params:
   lambda_sty: 1.
   lambda_diff: 1.
 
-  diff_epoch: 20
+  diff_epoch: 0        # start diffusion immediately (pretrained model already has diffusion weights)
   joint_epoch: 999     # disable SLM joint training (no Whisper loaded)
 
 optimizer_params:

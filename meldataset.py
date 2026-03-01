@@ -1,18 +1,20 @@
 #coding: utf-8
 import os
 import os.path as osp
+import math
 import time
 import random
 import numpy as np
 import random
 import soundfile as sf
 import librosa
+from collections import defaultdict
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 import torchaudio
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 import logging
 logger = logging.getLogger(__name__)
@@ -249,6 +251,92 @@ class Collater(object):
 
 
 
+class SpeakerBalancedBatchSampler(Sampler):
+    """Round-robin speaker-balanced batch sampler with per-speaker ring buffers.
+
+    Each speaker maintains a shuffled pool of sample indices. Batches are filled
+    by cycling through speakers in round-robin order. When a speaker's pool is
+    exhausted, it wraps around (ring buffer) and reshuffles.
+
+    Example with batch_size=2, 5 speakers (A-E):
+        [A_01, B_01], [C_01, D_01], [E_01, A_02], [B_02, C_02], ...
+    """
+
+    def __init__(self, data_list, batch_size, seed=42, drop_last=True):
+        self.batch_size = batch_size
+        self.epoch = 0
+        self.seed = seed
+        self.drop_last = drop_last
+
+        # Group dataset indices by speaker ID
+        self.speaker_to_indices = defaultdict(list)
+        for idx, item in enumerate(data_list):
+            speaker_id = str(item[2])
+            self.speaker_to_indices[speaker_id].append(idx)
+
+        self.speaker_ids = sorted(self.speaker_to_indices.keys())
+        self.num_speakers = len(self.speaker_ids)
+        self.total_samples = len(data_list)
+
+        if self.num_speakers == 0:
+            raise ValueError("No speakers found in data_list")
+
+        # Log per-speaker statistics
+        max_count = max(len(v) for v in self.speaker_to_indices.values())
+        min_count = min(len(v) for v in self.speaker_to_indices.values())
+        logger.info(
+            "SpeakerBalancedBatchSampler: %d speakers, batch_size=%d, "
+            "samples/speaker: min=%d, max=%d, total=%d",
+            self.num_speakers, self.batch_size, min_count, max_count, self.total_samples,
+        )
+        draws_per_speaker = self.total_samples / self.num_speakers
+        for sid in self.speaker_ids:
+            count = len(self.speaker_to_indices[sid])
+            ratio = draws_per_speaker / count
+            logger.info("  Speaker %s: %d samples (oversample x%.2f)", sid, count, ratio)
+
+    def set_epoch(self, epoch):
+        """Set epoch for reproducible per-epoch shuffling."""
+        self.epoch = epoch
+
+    def __len__(self):
+        # Keep the same epoch length as standard sampling
+        if self.drop_last:
+            return self.total_samples // self.batch_size
+        return math.ceil(self.total_samples / self.batch_size)
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+
+        # Build per-speaker shuffled pools
+        pools = {}
+        positions = {}
+        for sid in self.speaker_ids:
+            indices = list(self.speaker_to_indices[sid])
+            rng.shuffle(indices)
+            pools[sid] = indices
+            positions[sid] = 0
+
+        speaker_ptr = 0
+        num_batches = len(self)
+
+        for _ in range(num_batches):
+            batch = []
+            for _ in range(self.batch_size):
+                sid = self.speaker_ids[speaker_ptr % self.num_speakers]
+
+                # Ring buffer: wrap around and reshuffle when exhausted
+                if positions[sid] >= len(pools[sid]):
+                    rng.shuffle(pools[sid])
+                    positions[sid] = 0
+
+                batch.append(pools[sid][positions[sid]])
+                positions[sid] += 1
+                speaker_ptr += 1
+
+            yield batch
+
+
 def build_dataloader(path_list,
                      root_path,
                      validation=False,
@@ -260,19 +348,35 @@ def build_dataloader(path_list,
                      collate_config={},
                      dataset_config={},
                      persistent_workers=False,
-                     prefetch_factor=None):
+                     prefetch_factor=None,
+                     speaker_balanced=False):
 
     dataset = FilePathDataset(path_list, root_path, OOD_data=OOD_data, min_length=min_length, validation=validation, **dataset_config)
     collate_fn = Collater(**collate_config)
-    data_loader = DataLoader(dataset,
-                             batch_size=batch_size,
-                             shuffle=(not validation),
-                             num_workers=num_workers,
-                             drop_last=True,
-                             collate_fn=collate_fn,
-                             pin_memory=(device != 'cpu'),
-                             persistent_workers=persistent_workers if num_workers > 0 else False,
-                             prefetch_factor=prefetch_factor if num_workers > 0 else None)
+
+    pw = persistent_workers if num_workers > 0 else False
+    pf = prefetch_factor if num_workers > 0 else None
+
+    if speaker_balanced and not validation:
+        batch_sampler = SpeakerBalancedBatchSampler(
+            dataset.data_list, batch_size=batch_size, drop_last=True)
+        data_loader = DataLoader(dataset,
+                                 batch_sampler=batch_sampler,
+                                 num_workers=num_workers,
+                                 collate_fn=collate_fn,
+                                 pin_memory=(device != 'cpu'),
+                                 persistent_workers=pw,
+                                 prefetch_factor=pf)
+    else:
+        data_loader = DataLoader(dataset,
+                                 batch_size=batch_size,
+                                 shuffle=(not validation),
+                                 num_workers=num_workers,
+                                 drop_last=True,
+                                 collate_fn=collate_fn,
+                                 pin_memory=(device != 'cpu'),
+                                 persistent_workers=pw,
+                                 prefetch_factor=pf)
 
     return data_loader
 

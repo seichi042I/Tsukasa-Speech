@@ -192,7 +192,8 @@ def main(config_path):
                                         dataset_config={'cache_dir': cache_dir},
                                         device=device,
                                         persistent_workers=True,
-                                        prefetch_factor=2)
+                                        prefetch_factor=2,
+                                        speaker_balanced=True)
 
     val_dataloader = build_dataloader(val_list,
                                       root_path,
@@ -258,11 +259,16 @@ def main(config_path):
     
     for k in model:
         model[k] = accelerator.prepare(model[k])
-    
+
+    # Keep reference to batch sampler for set_epoch() calls
+    _train_batch_sampler = None
+    if hasattr(train_dataloader, 'batch_sampler') and hasattr(train_dataloader.batch_sampler, 'set_epoch'):
+        _train_batch_sampler = train_dataloader.batch_sampler
+
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
     )
-      
+
     start_epoch = 0
     iters = 0
 
@@ -387,11 +393,14 @@ def main(config_path):
         running_loss = 0
         start_time = time.time()
 
+        if _train_batch_sampler is not None:
+            _train_batch_sampler.set_epoch(epoch)
+
         _ = [model[key].eval() for key in model]
-        
+
         model.text_aligner.train()
         model.text_encoder.train()
-        
+
         model.predictor.train()
         model.bert_encoder.train()
         model.bert.train()

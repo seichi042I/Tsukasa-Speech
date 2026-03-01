@@ -154,7 +154,8 @@ def main(config_path):
                                         batch_size=batch_size,
                                         num_workers=0,
                                         dataset_config={},
-                                        device=device)
+                                        device=device,
+                                        speaker_balanced=True)
 
     val_dataloader = build_dataloader(val_list,
                                       root_path,
@@ -202,10 +203,15 @@ def main(config_path):
     for k in model:
         model[k] = accelerator.prepare(model[k])
     
+    # Keep reference to batch sampler for set_epoch() calls
+    _train_batch_sampler = None
+    if hasattr(train_dataloader, 'batch_sampler') and hasattr(train_dataloader.batch_sampler, 'set_epoch'):
+        _train_batch_sampler = train_dataloader.batch_sampler
+
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
     )
-    
+
     _ = [model[key].to(device) for key in model]
 
     # initialize optimizers after preparing models for compatibility with FSDP
@@ -250,6 +256,9 @@ def main(config_path):
     for epoch in range(start_epoch, epochs):
         running_loss = 0
         start_time = time.time()
+
+        if _train_batch_sampler is not None:
+            _train_batch_sampler.set_epoch(epoch)
 
         _ = [model[key].train() for key in model]
 

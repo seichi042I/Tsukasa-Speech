@@ -20,12 +20,12 @@ elif [ -f "$RUN_CONFIG" ]; then
 import yaml
 with open('${RUN_CONFIG}') as f:
     cfg = yaml.safe_load(f) or {}
-print(cfg.get('stage', 'all'))
+print(cfg.get('stage', '2'))
 ")
     echo "Stage from run_config.yaml: $STAGE"
 else
-    STAGE="all"
-    echo "No run_config.yaml found, using default stage: $STAGE"
+    STAGE="2"
+    echo "No run_config.yaml found, using default stage: $STAGE (finetuning)"
 fi
 
 # ---- Step 2: Auto-detect GPU tier ----

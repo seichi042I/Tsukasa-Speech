@@ -66,6 +66,28 @@ def download_from_hf(repo_id, base_dir=".", token=None):
         print(f"  [done] {path}")
 
 
+def ensure_hf_models_cached(token=None):
+    """Pre-cache HuggingFace models used during training (Whisper SLM).
+
+    These are loaded via transformers from_pretrained() during training.
+    Pre-caching avoids network access at training time.
+    """
+    from huggingface_hub import snapshot_download
+
+    hf_models = [
+        "openai/whisper-large-v2",                    # ~6GB - SLM encoder weights
+        "Respair/Whisper_Large_v2_Encoder_Block",     # config only
+    ]
+    for repo_id in hf_models:
+        print(f"  [cache] {repo_id} ...")
+        try:
+            snapshot_download(repo_id, token=token)
+            print(f"  [ok]    {repo_id}")
+        except Exception as e:
+            print(f"  [warn]  {repo_id}: {e}")
+            print(f"          (SLM loss requires this model. Set lambda_slm: 0 to skip.)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download pretrained models")
     parser.add_argument("--check", action="store_true", help="Only check, don't download")
@@ -77,38 +99,43 @@ def main():
 
     if not missing:
         print("All model weights present.")
-        return 0
-
-    print(f"Missing {len(missing)} model file(s):")
-    for f in missing:
-        print(f"  - {f}")
-
-    if args.check:
-        return 1
-
-    repo_id = args.repo
-    if not repo_id:
-        print()
-        print("ERROR: Models not found and MODEL_REPO not set.")
-        print("Options:")
-        print("  1. Set MODEL_REPO env var to your HuggingFace repo ID")
-        print("  2. Mount models via volume (e.g. -v /path/to/models:/app/Models)")
-        print("  3. Place model files manually in the expected paths")
-        return 1
-
-    token = os.environ.get("HF_TOKEN")
-    print(f"\nDownloading from HuggingFace: {repo_id}")
-    download_from_hf(repo_id, args.base_dir, token=token)
-
-    # Verify
-    still_missing = check_models(args.base_dir)
-    if still_missing:
-        print(f"\nERROR: Still missing after download:")
-        for f in still_missing:
+    else:
+        print(f"Missing {len(missing)} model file(s):")
+        for f in missing:
             print(f"  - {f}")
-        return 1
 
-    print("\nAll models downloaded successfully.")
+        if args.check:
+            return 1
+
+        repo_id = args.repo
+        if not repo_id:
+            print()
+            print("ERROR: Models not found and MODEL_REPO not set.")
+            print("Options:")
+            print("  1. Set MODEL_REPO env var to your HuggingFace repo ID")
+            print("  2. Mount models via volume (e.g. -v /path/to/models:/app/Models)")
+            print("  3. Place model files manually in the expected paths")
+            return 1
+
+        token = os.environ.get("HF_TOKEN")
+        print(f"\nDownloading from HuggingFace: {repo_id}")
+        download_from_hf(repo_id, args.base_dir, token=token)
+
+        # Verify
+        still_missing = check_models(args.base_dir)
+        if still_missing:
+            print(f"\nERROR: Still missing after download:")
+            for f in still_missing:
+                print(f"  - {f}")
+            return 1
+
+        print("\nAll models downloaded successfully.")
+
+    # Pre-cache HuggingFace models (Whisper for SLM loss)
+    if not args.check:
+        print("\n=== Pre-caching HuggingFace models ===")
+        ensure_hf_models_cached(token=os.environ.get("HF_TOKEN"))
+
     return 0
 
 

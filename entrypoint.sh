@@ -7,19 +7,14 @@ echo "Started at: $(date)"
 CACHE_DIR="${TSUKASA_CACHE_DIR:-/tmp/wave_cache}"
 mkdir -p "$CACHE_DIR"
 
-# ---- Download models if not present ----
+# ---- Download models if not present + pre-cache HF models ----
 echo ""
 echo "=== Checking model weights ==="
-if ! python download_models.py --check 2>/dev/null; then
-    echo "Downloading missing models..."
-    python download_models.py || {
-        echo "ERROR: Model download failed."
-        echo "Container staying alive for SSH access."
-        sleep infinity
-    }
-else
-    echo "All model weights present."
-fi
+python download_models.py || {
+    echo "ERROR: Model download failed."
+    echo "Container staying alive for SSH access."
+    sleep infinity
+}
 
 # ---- Interactive mode: shell only ----
 if [ "${STAGE:-}" = "shell" ]; then

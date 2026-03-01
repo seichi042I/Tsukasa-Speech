@@ -20,186 +20,208 @@ tags:
 
 ---
 
-
 <div style="text-align:center;">
   <img src="https://i.postimg.cc/y6gT18Tn/Untitled-design-1.png" alt="Logo" style="width:300px; height:auto;">
 </div>
 
-# Tsukasa 司 Speech: Engineering the Naturalness and Rich Expressiveness 
+# Tsukasa 司 Speech — RunPod Training Pipeline
 
+This repository is a **self-training/fine-tuning pipeline** for Tsukasa Speech, packaged as a Docker image for use on [RunPod](https://runpod.io) or any CUDA-capable host.
 
-**tl;dr** : I made a very cool japanese speech generation model.
+日本語版 README は [README_JP.md](README_JP.md)。
 
-if the demo didn't work and you just want to listen to some samples, take a look at this  [notebook](https://colab.research.google.com/drive/1efRFWeHI5ZCcwvQJDRzt8qT3m6CB7XzK?usp=sharing). (ps. this belongs to a much earlier checkpoint, not representative of the model at its best.)
+Original model card / demo: [Respair/Tsukasa_Speech](https://huggingface.co/Respair/Tsukasa_Speech)
 
 ---
 
-Try [chatting with Aira](https://huggingface.co/spaces/Respair/Chatting_with_Aira), a mini-project I did by using various Tech, including Tsukasa. (maybe not very optimized, but hey, it works!)
+## What is Tsukasa Speech?
 
-日本語のモデルカードは[こちら](https://huggingface.co/Respair/Tsukasa_Speech/blob/main/README_JP.md)。
+A Japanese TTS model built on [StyleTTS 2](https://github.com/yl4579/StyleTTS2) with the following additions:
 
-Part of a [personal project](https://github.com/Respaired/Project-Kanade), focusing on further advancing Japanese speech field. 
+- mLSTM layers (xLSTM) instead of standard LSTM in the text/prosody encoders
+- Whisper Large v2 encoder as the SLM discriminator (instead of WavLM)
+- Retrained PL-BERT, F0 pitch extractor, and text aligner from scratch
+- ISTFTNet decoder at 24 kHz
+- Promptable style transfer
+- Smart mixed Japanese/Romaji phonemization
 
-- Use the HuggingFace Space for **Tsukasa** (24khz): [![huggingface](https://img.shields.io/badge/Interactive_Demo-HuggingFace-yellow)](https://huggingface.co/spaces/Respair/Tsukasa_Speech)
-- ~~HuggingFace Space for **Tsumugi** (48khz): [![huggingface](https://img.shields.io/badge/Interactive_Demo-HuggingFace-yellow)](https://huggingface.co/spaces/Respair/Tsumugi_48khz)~~
+---
 
-- Join Shoukan lab's discord server, a comfy place I frequently visit -> [![Discord](https://img.shields.io/discord/1197679063150637117?logo=discord&logoColor=white&label=Join%20our%20Community)](https://discord.gg/JrPSzdcM)
+## Quick Start (RunPod)
 
-Github's repo:
-[![GitHub](https://img.shields.io/badge/github-%23121011.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Respaired/Tsukasa-Speech/)
+### 1. Prepare data
 
-## What is this?
+Place training data on your RunPod network volume:
 
-*Note*: This model only supports the Japanese language; ~~but you can feed it Romaji if you use the Gradio demo.~~ (no longer, due to resource constraints, but the Tech is there.)
-
-This is a speech generation network, aimed at maximizing the expressiveness and Controllability of the generated speech. at its core it uses [StyleTTS 2](https://github.com/yl4579/StyleTTS2)'s architecture with the following changes:
-
-- Incorporating mLSTM Layers instead of regular PyTorch LSTM layers, and increasing the capacity of the text and prosody encoder by using a higher number of parameters
-- Retrained PL-Bert, Pitch Extractor, Text Aligner from scratch
-- Whisper's Encoder instead of WavLM for the SLM
-- 48khz Config 
-- improved Performance on non-verbal sounds and cues. such as sigh, pauses, etc. and also very slightly on laughter (depends on the speaker)
-- a new way of sampling the Style Vectors.
-- Promptable Speech Synthesizing.
-- a Smart Phonemization algorithm that can handle Romaji inputs or a mixture of Japanese and Romaji.
-- Fixed DDP and BF16 Training (mostly!)
-
-
-There are two checkpoints you can use. Tsukasa & Tsumugi 48khz (placeholder).
-
-Tsukasa was trained on ~800 hours of studio grade, high quality data. sourced mainly from games and novels, part of it from a private dataset.
-So the Japanese is going to be the "anime japanese" (it's different than what people usually speak in real-life.)
-
-Brought to you by:
-
-- Soshyant (me)
-- [Auto Meta](https://github.com/Alignment-Lab-AI)
-- [Cryptowooser](https://github.com/cryptowooser)
-- [Buttercream](https://github.com/korakoe)
-
-Special thanks to Yinghao Aaron Li, the Author of StyleTTS which this work is based on top of that. <br> He is one of the most talented Engineers I've ever seen in this field. 
-Also Karesto and Raven(a.k.a hexgrad) for their help in debugging some of the scripts. wonderful people.
-___________________________________________________________________________________
-## Why does it matter?
-
-Recently, there's a big trend towards larger models, increasing the scale. We're going the opposite way, trying to see how far we can push the limits by utilizing existing tools.
-Maybe, just maybe, scale is not necessarily the answer.
-
-There's also a few things that's related to Japanese (but can have a wider impact on languages that face a similar issue like Arabic). such as how we can improve the intonations for this language. what can be done to accurately annotate a text that can have various spellings depending on the context, etc.
-
-## How to do ...
-
-## Pre-requisites
-1. Python >= 3.11
-2. Clone this repository:
-```bash
-git clone https://huggingface.co/Respair/Tsukasa_Speech
-cd Tsukasa_Speech
 ```
-3. Install python requirements: 
-```bash
-pip install -r requirements.txt
+/runpod-volume/Data/
+    speaker_name/
+        wav/
+            XXXX_0001.wav
+            XXXX_0002.wav
+            ...
+        transcript_utf8.txt
 ```
 
-
-# Inference:
-
-Gradio demo:
-```bash
-python app_tsuka.py
+`transcript_utf8.txt` format (colon-separated):
 ```
-
-or check the inference notebook. before that, make sure you read the **Important Notes** section down below.
-
-# Training:
-
-
-**Before starting remove lines 985 and 986 from models.py also remove "KotoDama_Prompt, KotoDama_Text" from the "build_model" function's parameters.**
-
-**First stage training**:
-```bash
-accelerate launch train_first.py --config_path ./Configs/config.yml
+XXXX_0001.wav:月の宝…:ツキノタカラ
+XXXX_0002.wav:空を飛びたいな:ソラヲトビタイナ
 ```
-**Second stage training**:
-```bash
-accelerate launch accelerate_train_second.py --config_path ./Configs/config.yml 
-```
+Fields: `filename:japanese_text:reading` (the reading column is optional and can be omitted).
 
-SLM Joint-Training doesn't work on multigpu. (you don't need it, i didn't use it too.)
-
-or:
+### 2. Build and push the Docker image
 
 ```bash
-launch train_first.py --config_path ./Configs/config.yml
+docker build -t your-dockerhub/tsukasa-speech .
+docker push your-dockerhub/tsukasa-speech
 ```
 
-**Third stage training** (Kotodama, prompt encoding, etc.):
+### 3. Launch on RunPod
+
+In the RunPod UI:
+
+| Setting | Value |
+|---|---|
+| Container Image | `your-dockerhub/tsukasa-speech` |
+| Volume Mount | `/runpod-volume` (network volume with your `Data/` directory) |
+| `MODEL_REPO` env | HuggingFace repo ID for model weights (e.g. `Respair/Tsukasa_Speech`) |
+| `HF_TOKEN` env | (optional) for private repos |
+
+On startup the container will automatically:
+1. Download missing model weights from HuggingFace
+2. Detect GPU VRAM and select the appropriate config tier
+3. Phonemize transcripts and build `train_list.txt` / `val_list.txt`
+4. Pre-warm the wave cache
+5. Run Stage 1 → Stage 2 training
+
+### 4. Control training via environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `STAGE` | `all` | `1` = Stage 1 only, `2` = Stage 2 only, `all` = both, `shell` = debug shell |
+| `GPU_TIER_OVERRIDE` | (auto-detect) | `low` / `mid` / `high` — override automatic GPU detection |
+| `N_JOBS` | `4` | Parallel workers for preprocessing |
+| `DATA_DIR` | `Data` | Path to data directory |
+
+Or place a `Data/run_config.yaml` on your volume:
+
+```yaml
+stage: all          # 1 | 2 | all
+val_ratio: 0.1      # validation split fraction
+max_duration: 15.0  # skip audio files longer than N seconds
+
+# per-stage overrides (optional)
+stage1:
+  epochs: 100
+stage2:
+  epochs: 50
 ```
-not planned right now, due to some constraints, but feel free to replicate.
-```
 
+---
 
-## some ideas for future
+## GPU Tiers
 
-I can think of a few things that can be improved, not nessarily by me, treat it as some sorts of suggestions:
+The container auto-detects your GPU and selects a config:
 
-- [o] changing the decoder ([fregrad](https://github.com/kaistmm/fregrad) looks promising)
-- [o] retraining the Pitch Extractor using a different algorithm
-- [o] while the quality of non-speech sounds have been improved, it cannot generate an entirely non-speech output, perhaps because of the hard alignement.
-- [o] using the Style encoder as another modality in LLMs, since they have a detailed representation of the tone and expression of a speech (similar to Style-Talker).
+| Tier | GPU VRAM | Config | batch_size | max_len | SLM |
+|---|---|---|---|---|---|
+| `low` | < 20 GB | `config_low_vram.yml` | 2 | 200 | disabled |
+| `mid` | 20–36 GB | `config_mid_vram.yml` | 4 | 600 | enabled |
+| `high` | ≥ 36 GB | `config_high_vram.yml` | 8 | 800 | enabled |
 
-## Pre-requisites
-1. Python >= 3.11
-2. Clone this repository:
+Override with `GPU_TIER_OVERRIDE=mid` (or via `run_config.yaml`).
+
+---
+
+## Model Weights
+
+The following files must be present at startup (downloaded automatically from `MODEL_REPO`):
+
+| File | Size | Description |
+|---|---|---|
+| `Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth` | ~2.0 GB | Pretrained Tsukasa checkpoint |
+| `Utils/ASR/bst_00080.pth` | ~91 MB | Text aligner (ASR) |
+| `Utils/JDC/bst.t7` | ~21 MB | F0 pitch extractor |
+| `Utils/PLBERT/step_1050000.t7` | ~1.8 GB | PL-BERT |
+
+To skip downloading, mount them directly:
 ```bash
-git clone https://huggingface.co/Respair/Tsukasa_Speech
-cd Tsukasa_Speech
+docker run ... -v /path/to/Models:/app/Models -v /path/to/Utils:/app/Utils
 ```
-3. Install python requirements: 
+
+---
+
+## Local Development
+
 ```bash
-pip install -r requirements.txt
+# Full pipeline (auto GPU detect → preprocess → train)
+docker compose up train
+
+# Stage 1 only
+docker compose up stage1
+
+# Stage 2 only
+docker compose up stage2
+
+# Debug shell
+docker compose run shell
+# Inside container: run 'train' to start training
 ```
 
-## Training details
+---
 
-- 8x A40s + 2x V100s(32gb each)
-- 750 ~ 800 hours of data
-- Bfloat16
-- Approximately 3 weeks of training, overall 3 months including the work spent on the data pipeline.
-- Roughly 66.6 kg of CO2eq. of Carbon emitted if we base it on Google Cloud. (I didn't use Google, but the cluster is located in US, please treat it as a very rough approximation.) 
+## Repository Structure
 
-
-### Important Notes
-
-Check [here](https://huggingface.co/Respair/Tsukasa_Speech/blob/main/Important_Notes.md)
-
-Any questions?
-```email
-saoshiant@protonmail.com
 ```
-or simply DM me on discord.
+.
+├── train.sh                  # Main training pipeline script
+├── entrypoint.sh             # Container entrypoint
+├── Dockerfile
+├── docker-compose.yml        # Local development
+│
+├── train_first.py            # Stage 1: acoustic pre-training
+├── finetune_accelerate.py    # Stage 2: joint fine-tuning
+├── preprocess_data.py        # Phonemization + data split
+├── detect_gpu.py             # GPU VRAM detection → config tier
+├── merge_config.py           # Merge base config + user overrides
+├── download_models.py        # HuggingFace model weight download
+│
+├── models.py                 # Model architecture
+├── meldataset.py             # DataLoader
+├── losses.py                 # Loss functions
+├── optimizers.py             # Optimizer builder
+├── utils.py                  # Utilities
+│
+├── Configs/
+│   ├── config_low_vram.yml   # ~16 GB GPU
+│   ├── config_mid_vram.yml   # 24–32 GB GPU
+│   ├── config_high_vram.yml  # 32 GB+ GPU
+│   └── reference/            # Reference configs (not used by pipeline)
+│       ├── base_stage1.yml
+│       └── base_stage2.yml
+│
+├── OOD_LargeScale_.csv       # OOD text data for training
+├── Utils/                    # ASR, JDC, PLBERT, phonemizer
+└── Modules/                  # Diffusion, SLM adversarial loss
+```
 
-## Some cool projects:
-
-[Kokoro]("https://huggingface.co/spaces/hexgrad/Kokoro-TTS") - a very nice and light weight TTS, based on StyleTTS. supports Japanese and English.<br>
-[VoPho]("https://github.com/ShoukanLabs/VoPho") - a meta phonemizer to rule them all. it will automatically handle any languages with hand-picked high quality phonemizers.
-
-
+---
 
 ## References
+
 - [yl4579/StyleTTS2](https://github.com/yl4579/StyleTTS2)
 - [NX-AI/xlstm](https://github.com/NX-AI/xlstm)
 - [archinetai/audio-diffusion-pytorch](https://github.com/archinetai/audio-diffusion-pytorch)
 - [jik876/hifi-gan](https://github.com/jik876/hifi-gan)
 - [rishikksh20/iSTFTNet-pytorch](https://github.com/rishikksh20/iSTFTNet-pytorch)
-- [nii-yamagishilab/project-NN-Pytorch-scripts/project/01-nsf](https://github.com/nii-yamagishilab/project-NN-Pytorch-scripts/tree/master/project/01-nsf)
-- [litain's Moe Speech](https://huggingface.co/datasets/litagin/moe-speech) a very cool dataset you can use in case i couldn't release mine 
-```
+- [ShoukanLabs/VoPho](https://github.com/ShoukanLabs/VoPho)
+
+```bibtex
 @article{xlstm,
   title={xLSTM: Extended Long Short-Term Memory},
   author={Beck, Maximilian and P{\"o}ppel, Korbinian and Spanring, Markus and Auer, Andreas and Prudnikova, Oleksandra and Kopp, Michael and Klambauer, G{\"u}nter and Brandstetter, Johannes and Hochreiter, Sepp},
   journal={arXiv preprint arXiv:2405.04517},
   year={2024}
 }
-
 ```

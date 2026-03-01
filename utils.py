@@ -1,6 +1,7 @@
 from monotonic_align import maximum_path
 from monotonic_align import mask_from_lens
 from monotonic_align.core import maximum_path_c
+import os
 import numpy as np
 import torch
 import copy
@@ -39,9 +40,12 @@ def get_data_path_list(train_path=None, val_path=None):
         val_path = "Data/val_list.txt"
 
     with open(train_path, "r", encoding="utf-8", errors="ignore") as f:
-        train_list = f.readlines()
-    with open(val_path, "r", encoding="utf-8", errors="ignore") as f:
-        val_list = f.readlines()
+        train_list = [l for l in f.readlines() if l.strip()]
+
+    val_list = []
+    if val_path and os.path.exists(val_path):
+        with open(val_path, "r", encoding="utf-8", errors="ignore") as f:
+            val_list = [l for l in f.readlines() if l.strip()]
 
     return train_list, val_list
 

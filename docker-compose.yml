@@ -1,0 +1,73 @@
+# ===========================================================================
+# ローカル開発用 docker-compose.yml
+#
+# RunPodではこのファイルは使いません。
+# RunPodでの使い方:
+#   1. docker build -t username/tsukasa-speech . && docker push
+#   2. RunPod UI で Docker Image, Volume Mount, 環境変数を設定
+#      - MODEL_REPO=username/tsukasa-speech-models (初回DL用)
+#      - Volume: /runpod-volume → Data + モデルキャッシュ
+#   3. Pod起動 → モデルDL → 前処理 → 学習
+#
+# ローカルでの使い方:
+#   docker compose up train          # 自動GPU検出 → 前処理 → 学習
+#   docker compose up stage1         # Stage1のみ
+#   docker compose run shell         # デバッグシェル
+#
+# モデル重みの提供方法 (いずれか):
+#   A. ローカルにマウント: ./Models, ./Utils にモデル重みがあれば自動認識
+#   B. HuggingFaceから自動DL: MODEL_REPO を設定
+# ===========================================================================
+
+x-gpu-common: &gpu-common
+  build: .
+  shm_size: '8g'
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  environment: &env-common
+    HF_HOME: /root/.cache/huggingface
+    TSUKASA_CACHE_DIR: /tmp/wave_cache
+    N_JOBS: ${N_JOBS:-4}
+    MODEL_REPO: ${MODEL_REPO:-}
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes:
+    - ./Data:/app/Data
+    # Model weights (mount local dirs if available)
+    - ./Models:/app/Models
+    - ./Utils/ASR/bst_00080.pth:/app/Utils/ASR/bst_00080.pth
+    - ./Utils/JDC/bst.t7:/app/Utils/JDC/bst.t7
+    - ./Utils/PLBERT/step_1050000.t7:/app/Utils/PLBERT/step_1050000.t7
+    # HuggingFace cache (Whisper SLM model etc.)
+    - hf_cache:/root/.cache/huggingface
+
+services:
+  train:
+    <<: *gpu-common
+
+  stage1:
+    <<: *gpu-common
+    environment:
+      <<: *env-common
+      STAGE: "1"
+
+  stage2:
+    <<: *gpu-common
+    environment:
+      <<: *env-common
+      STAGE: "2"
+
+  shell:
+    <<: *gpu-common
+    environment:
+      <<: *env-common
+      STAGE: shell
+    stdin_open: true
+    tty: true
+
+volumes:
+  hf_cache:

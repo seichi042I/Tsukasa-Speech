@@ -4,6 +4,7 @@ import re
 import sys
 import yaml
 import shutil
+import glob
 import numpy as np
 import torch
 import click
@@ -37,6 +38,72 @@ from torch.utils.tensorboard import SummaryWriter
 import logging
 from accelerate.logging import get_logger
 logger = get_logger(__name__, log_level="DEBUG")
+
+
+def find_latest_checkpoint(log_dir, prefix):
+    """Find the latest checkpoint file matching {prefix}_NNNNN.pth pattern."""
+    pattern = osp.join(log_dir, f'{prefix}_*.pth')
+    files = glob.glob(pattern)
+    if not files:
+        return None
+    # Extract epoch/step number and sort
+    def extract_number(f):
+        basename = osp.basename(f)
+        # Remove prefix and .pth, get the number part
+        num_str = basename.replace(f'{prefix}_', '').replace('.pth', '')
+        try:
+            return int(num_str)
+        except ValueError:
+            return -1
+    files = [(f, extract_number(f)) for f in files]
+    files = [(f, n) for f, n in files if n >= 0]
+    if not files:
+        return None
+    files.sort(key=lambda x: x[1])
+    return files[-1][0]
+
+
+def cleanup_checkpoints(log_dir, prefix, keep_latest=3, keep_every=10):
+    """Remove old checkpoints, keeping latest N and every M-th epoch.
+
+    For epoch-based checkpoints (prefix like 'epoch_1st'):
+      - Always keep the latest `keep_latest` checkpoints
+      - Keep checkpoints where epoch % keep_every == 0
+      - Delete the rest
+
+    For step-based checkpoints (prefix like '2nd_phase', 'Sana_Finetune_'):
+      - Only keep the latest `keep_latest` checkpoints
+    """
+    pattern = osp.join(log_dir, f'{prefix}_*.pth')
+    files = glob.glob(pattern)
+    if not files:
+        return
+
+    def extract_number(f):
+        basename = osp.basename(f)
+        num_str = basename.replace(f'{prefix}_', '').replace('.pth', '')
+        try:
+            return int(num_str)
+        except ValueError:
+            return -1
+
+    files = [(f, extract_number(f)) for f in files]
+    files = [(f, n) for f, n in files if n >= 0]
+    files.sort(key=lambda x: x[1])
+
+    if len(files) <= keep_latest:
+        return
+
+    is_epoch_based = prefix.startswith('epoch_')
+    latest_files = set(f for f, _ in files[-keep_latest:])
+
+    for filepath, number in files:
+        if filepath in latest_files:
+            continue
+        if is_epoch_based and number % keep_every == 0:
+            continue
+        print(f'Removing old checkpoint: {osp.basename(filepath)}')
+        os.remove(filepath)
 
 @click.command()
 @click.option('-p', '--config_path', default='Configs/config.yml', type=str)
@@ -85,7 +152,7 @@ def main(config_path):
                                         OOD_data=OOD_data,
                                         min_length=min_length,
                                         batch_size=batch_size,
-                                        num_workers=2,
+                                        num_workers=0,
                                         dataset_config={},
                                         device=device)
 
@@ -151,7 +218,14 @@ def main(config_path):
         optimizer.schedulers[k] = accelerator.prepare(optimizer.schedulers[k])
     
     with accelerator.main_process_first():
-        if config.get('pretrained_model', '') != '':
+        # Auto-resume: check for existing epoch checkpoints first
+        latest_ckpt = find_latest_checkpoint(log_dir, 'epoch_1st')
+        if latest_ckpt is not None:
+            accelerator.print(f'Resuming from checkpoint: {latest_ckpt}')
+            model, optimizer, start_epoch, iters = load_checkpoint(
+                model, optimizer, latest_ckpt, load_only_params=False)
+            start_epoch += 1  # resume from the next epoch
+        elif config.get('pretrained_model', '') != '':
             model, optimizer, start_epoch, iters = load_checkpoint(model,  optimizer, config['pretrained_model'],
                                         load_only_params=config.get('load_only_params', True))
         else:
@@ -328,13 +402,14 @@ def main(config_path):
 
                 print(f'Saving on step {epoch*len(train_dataloader)+i}...')
                 state = {
-                    'net':  {key: model[key].state_dict() for key in model}, 
+                    'net':  {key: model[key].state_dict() for key in model},
                     'optimizer': optimizer.state_dict(),
                     'iters': iters,
                     'epoch': epoch,
                 }
                 save_path = osp.join(log_dir, f'2nd_phase_{epoch*len(train_dataloader)+i}.pth')
-                torch.save(state, save_path)                        
+                torch.save(state, save_path)
+                cleanup_checkpoints(log_dir, '2nd_phase', keep_latest=3, keep_every=10)
                                 
         loss_test = 0
 
@@ -389,6 +464,10 @@ def main(config_path):
                 en = torch.stack(en)
                 gt = torch.stack(gt).detach()
 
+                # clip too short to be used by the style encoder
+                if gt.shape[-1] < 80:
+                    continue
+
                 F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1))
                 s = model.style_encoder(gt.unsqueeze(1))
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
@@ -401,53 +480,78 @@ def main(config_path):
 
         if accelerator.is_main_process:
             print('Epochs:', epoch + 1)
-            log_print('Validation loss: %.3f' % (loss_test / iters_test) + '\n\n\n\n', logger)
+            if iters_test > 0:
+                log_print('Validation loss: %.3f' % (loss_test / iters_test) + '\n\n\n\n', logger)
+                writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
+            else:
+                log_print('No validation data or all batches skipped\n', logger)
             print('\n\n\n')
-            writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
-            attn_image = get_image(s2s_attn[0].cpu().numpy().squeeze())
-            writer.add_figure('eval/attn', attn_image, epoch)
-            
+
+            # Sample from training data for eval audio logging
             with torch.no_grad():
-                for bib in range(len(asr)):
-                    mel_length = int(mel_input_length[bib].item())
-                    gt = mels[bib, :, :mel_length].unsqueeze(0)
-                    en = asr[bib, :, :mel_length // 2].unsqueeze(0)
-                                        
+                eval_batch = next(iter(train_dataloader))
+                eval_waves = eval_batch[0]
+                eval_batch_tensors = [b.to(device) for b in eval_batch[1:]]
+                eval_texts, eval_input_lengths, _, _, eval_mels, eval_mel_input_length, _ = eval_batch_tensors
+
+                eval_mask = length_to_mask(eval_mel_input_length // (2 ** n_down)).to(device)
+                eval_text_mask = length_to_mask(eval_input_lengths).to(eval_texts.device)
+
+                _, _, eval_s2s_attn = model.text_aligner(eval_mels, eval_mask, eval_texts)
+                eval_s2s_attn = eval_s2s_attn.transpose(-1, -2)
+                eval_s2s_attn = eval_s2s_attn[..., 1:]
+                eval_s2s_attn = eval_s2s_attn.transpose(-1, -2)
+
+                eval_t_en = model.text_encoder(eval_texts, eval_input_lengths, eval_text_mask)
+                eval_asr = (eval_t_en @ eval_s2s_attn)
+
+                attn_image = get_image(eval_s2s_attn[0].cpu().numpy().squeeze())
+                writer.add_figure('eval/attn', attn_image, epoch)
+
+                for bib in range(len(eval_asr)):
+                    mel_length = int(eval_mel_input_length[bib].item())
+                    if mel_length < 80:
+                        continue
+                    gt = eval_mels[bib, :, :mel_length].unsqueeze(0)
+                    en = eval_asr[bib, :, :mel_length // 2].unsqueeze(0)
+
                     F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
                     F0_real = F0_real.unsqueeze(0)
                     s = model.style_encoder(gt.unsqueeze(1))
                     real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
-                    
+
                     y_rec = model.decoder(en, F0_real, real_norm, s)
-                    
+
                     writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), epoch, sample_rate=sr)
-                    if epoch == 0:
-                        writer.add_audio('gt/y' + str(bib), waves[bib].squeeze(), epoch, sample_rate=sr)
-                    
-                    if bib >= 15:
+                    writer.add_audio('gt/y' + str(bib), eval_waves[bib].squeeze(), epoch, sample_rate=sr)
+
+                    if bib >= 5:
                         break
 
             if epoch % saving_epoch == 0:
-                if (loss_test / iters_test) < best_loss:
-                    best_loss = loss_test / iters_test
+                val_loss = (loss_test / iters_test) if iters_test > 0 else float('inf')
+                if val_loss < best_loss:
+                    best_loss = val_loss
                 print('Saving..')
                 state = {
-                    'net':  {key: model[key].state_dict() for key in model}, 
+                    'net':  {key: model[key].state_dict() for key in model},
                     'optimizer': optimizer.state_dict(),
                     'iters': iters,
-                    'val_loss': loss_test / iters_test,
+                    'val_loss': val_loss,
                     'epoch': epoch,
                 }
                 save_path = osp.join(log_dir, 'epoch_1st_%05d.pth' % epoch)
                 torch.save(state, save_path)
+                cleanup_checkpoints(log_dir, 'epoch_1st', keep_latest=3, keep_every=10)
                                 
     if accelerator.is_main_process:
         print('Saving..')
+        val_loss = (loss_test / iters_test) if iters_test > 0 else float('inf')
         state = {
-            'net':  {key: model[key].state_dict() for key in model}, 
+            'net':  {key: model[key].state_dict() for key in model},
             'optimizer': optimizer.state_dict(),
             'iters': iters,
-            'val_loss': loss_test / iters_test,
+            'val_loss': val_loss,
             'epoch': epoch,
         }
         save_path = osp.join(log_dir, config.get('first_stage_path', 'first_stage.pth'))

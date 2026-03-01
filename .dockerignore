@@ -1,0 +1,36 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+
+# User data (mounted at runtime)
+Data/
+
+# Not needed in training image
+Inference/
+reference_sample_wavs/
+app_tsuka.py
+*.md
+.claude/
+.gitignore
+.gitattributes
+docker-compose.yml
+Dockerfile
+.dockerignore
+sha256:*
+
+# User-specific configs (only base configs are baked into image)
+Configs/config.yml
+Configs/config_ft.yml
+Configs/config_iori.yml
+Configs/config_iori_ft.yml
+Configs/config_kanade.yml
+
+# ---- Model weights (downloaded at runtime, NOT baked into image) ----
+# Total savings: ~3.9GB
+Models/
+Utils/ASR/bst_00080.pth
+Utils/JDC/bst.t7
+Utils/PLBERT/step_1050000.t7
+# KTD is inference-only (not used in training)
+Utils/KTD/

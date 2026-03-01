@@ -75,6 +75,7 @@ class FilePathDataset(torch.utils.data.Dataset):
                  validation=False,
                  OOD_data="Data/OOD_texts.txt",
                  min_length=50,
+                 cache_dir=None,
                  ):
 
         spect_params = SPECT_PARAMS
@@ -92,14 +93,19 @@ class FilePathDataset(torch.utils.data.Dataset):
         self.mean, self.std = -4, 4
         self.data_augmentation = data_augmentation and (not validation)
         self.max_mel_length = 192
-        
+
         self.min_length = min_length
         with open(OOD_data, 'r', encoding='utf-8') as f:
             tl = f.readlines()
         idx = 1 if '.wav' in tl[0].split('|')[0] else 0
         self.ptexts = [t.split('|')[idx] for t in tl]
-        
+
         self.root_path = root_path
+
+        self.cache_dir = cache_dir or os.environ.get('TSUKASA_CACHE_DIR')
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            logger.info("Wave cache enabled: %s", self.cache_dir)
 
     def __len__(self):
         return len(self.data_list)
@@ -139,23 +145,35 @@ class FilePathDataset(torch.utils.data.Dataset):
     def _load_tensor(self, data):
         wave_path, text, speaker_id = data
         speaker_id = int(speaker_id)
+        wave = self._load_wave(wave_path)
+
+        text = self.text_cleaner(text)
+        text.insert(0, 0)
+        text.append(0)
+        text = torch.LongTensor(text)
+
+        return wave, text, speaker_id
+
+    def _load_wave(self, wave_path):
+        if self.cache_dir:
+            cache_key = wave_path.replace(os.sep, '_').replace('/', '_')
+            cache_file = osp.join(self.cache_dir, cache_key + '.npy')
+            if osp.exists(cache_file):
+                return np.load(cache_file)
+            wave = self._read_wav(wave_path)
+            np.save(cache_file, wave)
+            return wave
+        return self._read_wav(wave_path)
+
+    def _read_wav(self, wave_path):
         wave, sr = sf.read(osp.join(self.root_path, wave_path))
         if wave.shape[-1] == 2:
             wave = wave[:, 0].squeeze()
         if sr != 24000:
             wave = librosa.resample(wave, orig_sr=sr, target_sr=24000)
             print(wave_path, sr)
-            
         wave = np.concatenate([np.zeros([5000]), wave, np.zeros([5000])], axis=0)
-        
-        text = self.text_cleaner(text)
-        
-        text.insert(0, 0)
-        text.append(0)
-        
-        text = torch.LongTensor(text)
-
-        return wave, text, speaker_id
+        return wave
 
     def _load_data(self, data):
         wave, text_tensor, speaker_id = self._load_tensor(data)

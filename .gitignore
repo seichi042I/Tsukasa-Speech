@@ -1,0 +1,29 @@
+# Python
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Training data (large files)
+Data/IORI
+
+# Model checkpoints (large files tracked via Git LFS or separately)
+Models/IORI_Finetuned/
+*.pth
+
+# OOD data (large CSV)
+OOD_LargeScale_.csv
+
+# Tensorboard logs
+*/tensorboard/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+Data/output/
+Data/val_list.txt
+Data/train_list.txt
+Data/IORI.zip

@@ -19,162 +19,204 @@ tags:
   <img src="https://i.postimg.cc/y6gT18Tn/Untitled-design-1.png" alt="Logo" style="width:300px; height:auto;">
 </div>
 
+# Tsukasa 司 Speech — RunPod 学習パイプライン
 
-# Tsukasa 司 Speech: Engineering the Naturalness and Rich Expressiveness 
+このリポジトリは Tsukasa Speech の **自己学習・ファインチューニング用パイプライン** です。[RunPod](https://runpod.io) または CUDA 対応ホストで動作する Docker イメージとして提供されます。
 
-**tl;dr** : I made a very cool japanese speech generation model.
+英語版 README は [README.md](README.md)。
 
-司を含む様々な技術を利用して作成した[愛良との会話](https://huggingface.co/spaces/Respair/Chatting_with_Aira)をどうぞ試してみてください。（最適化はあまりされていないかもしれませんが、とりあえず動作します！）
+オリジナルモデル / デモ: [Respair/Tsukasa_Speech](https://huggingface.co/Respair/Tsukasa_Speech)
 
-[個人プロジェクト](https://github.com/Respaired/Project-Kanade)の一部で、日本語Speech分野のさらなる発展に焦点を当てています。 
+---
 
-- **Tsukasa** (24kHz)のHuggingFaceスペースを使用してください: [![huggingface](https://img.shields.io/badge/Interactive_Demo-HuggingFace-yellow)](https://huggingface.co/spaces/Respair/Tsukasa_Speech)
-- ~~**Tsumugi** (48kHz)のHuggingFaceスペース: [![huggingface](https://img.shields.io/badge/Interactive_Demo-HuggingFace-yellow)](https://huggingface.co/spaces/Respair/Tsumugi_48khz)~~
+## Tsukasa Speech とは
 
-- Shoukan labのDiscordサーバーに参加してください、私がよく訪れる居心地の良い場所です -> [![Discord](https://img.shields.io/discord/1197679063150637117?logo=discord&logoColor=white&label=Join%20our%20Community)](https://discord.gg/JrPSzdcM)
+[StyleTTS 2](https://github.com/yl4579/StyleTTS2) をベースにした日本語 TTS モデルで、以下の変更が加えられています:
 
-## これは何?
+- テキスト・プロソディエンコーダーに mLSTM (xLSTM) レイヤーを採用
+- SLM discriminator に WavLM ではなく Whisper Large v2 エンコーダーを使用
+- PL-BERT、F0 ピッチ抽出器、テキストアライナーをゼロから再学習
+- 24 kHz ISTFTNet デコーダー
+- プロンプトによるスタイル転送
+- 日本語・ローマ字混在テキスト対応のフォネマイザー
 
-*注意*: このモデルは日本語のみをサポートしていますが、Gradioデモでローマ字、またローマ字と普通の日本語をミックスしたテキストを入力することができます。
+---
 
-これはスピーチ生成ネットワークで、生成された音声の表現力と制御性を最大化することを目的としています。その中核にあるのは[StyleTTS 2](https://github.com/yl4579/StyleTTS2)のアーキテクチャで、以下のような変更が加えられています:
+## クイックスタート (RunPod)
 
-- 完全に新しいデータ前処理パイプラインの導入
-- 通常のPyTorch LSTMレイヤーではなくmLSTMレイヤーを採用し、テキストおよびプロソディエンコーダーの容量を高めるためにパラメーター数を増やしている
-- PL-Bert、Pitch Extractor、Text Alignerを一から再学習
-- SLMにはWavLMの代わりにWhisperのエンコーダーを使用
-- 48kHzの設定
-- 非言語サウンド(溜息、ポーズなど)や笑い声の表現力が向上
-- スタイルベクトルのサンプリングの新しい方法
-- プロンプト可能な音声合成
-- ローマ字の入力や日本語とローマ字の混在に対応した賢いフォネミゼーションアルゴリズム
-- DDP(Distributed Data Parallel)とBF16(Bfloat16)の訓練が修正された(ほとんど!)
+### 1. データの準備
 
-2つのチェックポイントが使用できます。Tsukasa and Tsumugi(仮称)です。
+RunPod ネットワークボリュームに学習データを配置します:
 
-Tsukasaは約800時間のデータで学習されています。主にゲームやノベルからのデータで、一部はプライベートデータセットからのものです。
-そのため、日本語は「アニメ日本語」(実際の日常会話とは異なる)になります。
-
-Tsumugi(仮称)は、この データの一部約300時間を使用し、さらに手動クリーニングや注釈付けを行った制御された方法で学習されています。 
-
-残念ながら、Tsumugiのコンテキスト長は制限されているため、イントネーションの処理はTsukasaほど良くありません。
-また、Kotodamaのインファレンスの最初のモードしかサポートしていないため、ボイスデザインはできません。
-
-
-Brought to you by:
-
-- Soshyant (私)
-- [Auto Meta](https://github.com/Alignment-Lab-AI)
-- [Cryptowooser](https://github.com/cryptowooser)
-- [Buttercream](https://github.com/korakoe)
-
-このプロジェクトは、StyleTTSの著者であるYinghao Aaron Li氏の成果に基づいています。<br> 彼はこの分野で最も才能あるエンジニアの一人だと思います。
-また、スクリプトのデバッグで協力してくれたKarestoさんとRavenさんにも感謝します。本当に素晴らしい人たちです。
-
-## なぜ？
-
-最近、より大規模なモデルへの傾向がありますが、私は逆の道を行き、既存のツールを活用することで限界まで性能を引き上げることを試みています。
-スケールが高くなくてもいい結果が得られるかもしれないことを試しています。
-
-日本語に関連するいくつかの事項もあります。例えば、この言語のイントネーションをどのように改善できるか、文脈によって綴りが変わる文章をどのように正確に注釈付けできるかなどです。
-
-## 使い方
-
-# Inference:
-
-Gradioデモ:
-```bash
-python app_tsuka.py
+```
+/runpod-volume/Data/
+    話者名/
+        wav/
+            XXXX_0001.wav
+            XXXX_0002.wav
+            ...
+        transcript_utf8.txt
 ```
 
-または、推論ノートブックをチェックしてください。その前に、**重要な注意事項**セクションをよく読んでください。
-
-# Training:
-
-**第1段階**:
-```bash
-accelerate launch train_first.py --config_path ./Configs/config.yml
+`transcript_utf8.txt` のフォーマット（コロン区切り）:
 ```
-**第2段階**:
-```bash
-accelerate launch accelerate_train_second.py --config_path ./Configs/config.yml 
+XXXX_0001.wav:月の宝…:ツキノタカラ
+XXXX_0002.wav:空を飛びたいな:ソラヲトビタイナ
 ```
+フィールド: `ファイル名:日本語テキスト:読み仮名`（読み仮名は省略可）。
 
-SLMの共同TrainはマルチGPUでは機能しません。(そもそもこの段階を行うのは必要かどうか自体が疑問です、私も使用していません。)
-
-または:
+### 2. Docker イメージのビルドとプッシュ
 
 ```bash
-launch train_first.py --config_path ./Configs/config.yml
+docker build -t your-dockerhub/tsukasa-speech .
+docker push your-dockerhub/tsukasa-speech
 ```
 
-**第3段階**(Kotodama、プロンプトエンコーディングなど):
-*未予定*
+### 3. RunPod で起動
 
+RunPod UI で以下を設定します:
 
-## 今後の改善案
+| 設定 | 値 |
+|---|---|
+| Container Image | `your-dockerhub/tsukasa-speech` |
+| Volume Mount | `/runpod-volume`（`Data/` ディレクトリを含むネットワークボリューム） |
+| `MODEL_REPO` 環境変数 | モデル重みの HuggingFace リポジトリ ID（例: `Respair/Tsukasa_Speech`） |
+| `HF_TOKEN` 環境変数 | （任意）プライベートリポジトリ用のトークン |
 
-いくつかの改善点が考えられます。必ずしも私が取り組むわけではありませんが、提案として捉えてください:
+コンテナ起動時に自動で以下の処理が実行されます:
+1. HuggingFace からモデル重みをダウンロード（未取得の場合）
+2. GPU VRAM を検出して最適な設定 Tier を選択
+3. トランスクリプトをフォネマイズして `train_list.txt` / `val_list.txt` を生成
+4. ウェーブキャッシュのウォームアップ
+5. Stage 1 → Stage 2 学習を実行
 
-- [o] デコーダーの変更(具体的に[fregrad](https://github.com/kaistmm/fregrad)が面白そう。)
-- [o] 別のアルゴリズムを使ってPitch Extractorを再訓練
-- [o] 非音声サウンドの生成は改善されましたが、完全な非音声出力は生成できません。これは、hard alignmentの影響かもしれません。
-- [o] スタイルエンコーダーを別のモダリティとしてLLMsで使用する(Style-Talkerに似たアプローチ)
+### 4. 環境変数による制御
 
-## 前提条件
-1. Python >= 3.11
-2. このリポジトリをクローンします:
+| 変数名 | デフォルト | 説明 |
+|---|---|---|
+| `STAGE` | `all` | `1` = Stage 1 のみ, `2` = Stage 2 のみ, `all` = 両方, `shell` = デバッグシェル |
+| `GPU_TIER_OVERRIDE` | （自動検出） | `low` / `mid` / `high` — GPU 検出を上書き |
+| `N_JOBS` | `4` | 前処理の並列ワーカー数 |
+| `DATA_DIR` | `Data` | データディレクトリのパス |
+
+またはボリューム上に `Data/run_config.yaml` を配置して設定できます:
+
+```yaml
+stage: all          # 1 | 2 | all
+val_ratio: 0.1      # 検証データの割合
+max_duration: 15.0  # この秒数を超える音声ファイルをスキップ
+
+# ステージごとの上書き設定（任意）
+stage1:
+  epochs: 100
+stage2:
+  epochs: 50
+```
+
+---
+
+## GPU Tier
+
+コンテナが GPU を自動検出してコンフィグを選択します:
+
+| Tier | GPU VRAM | コンフィグ | batch_size | max_len | SLM |
+|---|---|---|---|---|---|
+| `low` | 20 GB 未満 | `config_low_vram.yml` | 2 | 200 | 無効 |
+| `mid` | 20〜36 GB | `config_mid_vram.yml` | 4 | 600 | 有効 |
+| `high` | 36 GB 以上 | `config_high_vram.yml` | 8 | 800 | 有効 |
+
+`GPU_TIER_OVERRIDE=mid`（または `run_config.yaml` の `gpu_tier` キー）で上書き可能です。
+
+---
+
+## モデル重み
+
+起動時に以下のファイルが必要です（`MODEL_REPO` 設定時は自動ダウンロード）:
+
+| ファイル | サイズ | 説明 |
+|---|---|---|
+| `Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth` | 約 2.0 GB | 事前学習済み Tsukasa チェックポイント |
+| `Utils/ASR/bst_00080.pth` | 約 91 MB | テキストアライナー（ASR） |
+| `Utils/JDC/bst.t7` | 約 21 MB | F0 ピッチ抽出器 |
+| `Utils/PLBERT/step_1050000.t7` | 約 1.8 GB | PL-BERT |
+
+ボリュームマウントでダウンロードをスキップすることもできます:
 ```bash
-git clone https://github.com/yl4579/StyleTTS2.git
-cd StyleTTS2
+docker run ... -v /path/to/Models:/app/Models -v /path/to/Utils:/app/Utils
 ```
-3. Pythonの要件をインストールします: 
+
+---
+
+## ローカル開発
+
 ```bash
-pip install -r requirements.txt
+# フルパイプライン（GPU 自動検出 → 前処理 → 学習）
+docker compose up train
+
+# Stage 1 のみ
+docker compose up stage1
+
+# Stage 2 のみ
+docker compose up stage2
+
+# デバッグシェル
+docker compose run shell
+# コンテナ内で 'train' コマンドを実行すると学習開始
 ```
 
-## 訓練の詳細
+---
 
-- 8x A40s + 2x V100s(32GBずつ)
-- 750 ~ 800時間のデータ
-- Bfloat16
-- 約3週間の訓練、全体で3ヶ月(データパイプラインの作業を含む)
-- Google Cloudベースで概算すると、66.6 kg CO2eq.の二酸化炭素排出(Google Cloudは使用していませんが、クラスターがアメリカにあるため、非常に大まかな推定です。) 
+## リポジトリ構成
 
-
-### 重要な注意事項
-
-[こちらへ](https://huggingface.co/Respair/Tsukasa_Speech/blob/main/%E9%87%8D%E8%A6%81%E3%81%AA%E3%83%A1%E3%83%A2.md)
-
-ご質問があった場合は、遠慮なく教えてください。
 ```
-saoshiant@protonmail.com
+.
+├── train.sh                  # メイン学習パイプラインスクリプト
+├── entrypoint.sh             # コンテナエントリーポイント
+├── Dockerfile
+├── docker-compose.yml        # ローカル開発用
+│
+├── train_first.py            # Stage 1: 音響事前学習
+├── finetune_accelerate.py    # Stage 2: ジョイントファインチューニング
+├── preprocess_data.py        # フォネマイズ + データ分割
+├── detect_gpu.py             # GPU VRAM 検出 → コンフィグ Tier 選択
+├── merge_config.py           # ベースコンフィグ + ユーザー上書きのマージ
+├── download_models.py        # HuggingFace からモデル重みをダウンロード
+│
+├── models.py                 # モデルアーキテクチャ
+├── meldataset.py             # DataLoader
+├── losses.py                 # 損失関数
+├── optimizers.py             # オプティマイザービルダー
+├── utils.py                  # ユーティリティ
+│
+├── Configs/
+│   ├── config_low_vram.yml   # ~16 GB GPU 用
+│   ├── config_mid_vram.yml   # 24〜32 GB GPU 用
+│   ├── config_high_vram.yml  # 32 GB+ GPU 用
+│   └── reference/            # 参照用コンフィグ（パイプラインでは使用しない）
+│       ├── base_stage1.yml
+│       └── base_stage2.yml
+│
+├── OOD_LargeScale_.csv       # 学習用 OOD テキストデータ
+├── Utils/                    # ASR, JDC, PLBERT, フォネマイザー
+└── Modules/                  # 拡散モデル, SLM Adversarial Loss
 ```
-Discordも可能です。
 
-
-
-## Some cool and related projects:
-
-[Kokoro](https://huggingface.co/spaces/hexgrad/Kokoro-TTS) - a very nice and light weight TTS, based on StyleTTS. supports Japanese and English.<br>
-[VoPho](https://github.com/ShoukanLabs/VoPho) - a meta phonemizer to rule them all. it will automatically handle any languages with hand-picked high quality phonemizers.<br>
-
-
+---
 
 ## References
+
 - [yl4579/StyleTTS2](https://github.com/yl4579/StyleTTS2)
 - [NX-AI/xlstm](https://github.com/NX-AI/xlstm)
 - [archinetai/audio-diffusion-pytorch](https://github.com/archinetai/audio-diffusion-pytorch)
 - [jik876/hifi-gan](https://github.com/jik876/hifi-gan)
 - [rishikksh20/iSTFTNet-pytorch](https://github.com/rishikksh20/iSTFTNet-pytorch)
-- [nii-yamagishilab/project-NN-Pytorch-scripts/project/01-nsf](https://github.com/nii-yamagishilab/project-NN-Pytorch-scripts/tree/master/project/01-nsf)
+- [ShoukanLabs/VoPho](https://github.com/ShoukanLabs/VoPho)
 
-```
+```bibtex
 @article{xlstm,
   title={xLSTM: Extended Long Short-Term Memory},
   author={Beck, Maximilian and P{\"o}ppel, Korbinian and Spanring, Markus and Auer, Andreas and Prudnikova, Oleksandra and Kopp, Michael and Klambauer, G{\"u}nter and Brandstetter, Johannes and Hochreiter, Sepp},
   journal={arXiv preprint arXiv:2405.04517},
   year={2024}
 }
-
 ```

@@ -52,4 +52,5 @@ RUN chmod +x entrypoint.sh train.sh \
     && ln -s /app/train.sh /usr/local/bin/train \
     && mkdir -p /tmp/wave_cache
 
+EXPOSE 7860 6006
 ENTRYPOINT ["./entrypoint.sh"]

@@ -22,18 +22,7 @@ if [ "${STAGE:-}" = "shell" ]; then
     exec bash
 fi
 
-# ---- Auto-start training ----
-echo "Starting training pipeline..."
-if ./train.sh; then
-    echo ""
-    echo "=== Training completed successfully ==="
-else
-    echo ""
-    echo "=== Training failed (exit code: $?) ==="
-    echo "SSH in and run 'train' to retry."
-fi
-
-# Keep container alive for SSH access after training
+# ---- Launch Gradio UI ----
 echo ""
-echo "Container staying alive for SSH access. Run 'train' to re-run."
-sleep infinity
+echo "=== Starting Gradio UI ==="
+exec python app.py --host 0.0.0.0 --port "${GRADIO_PORT:-7860}"

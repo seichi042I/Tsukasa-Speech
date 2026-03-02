@@ -36,11 +36,9 @@ def deep_merge(base, override):
 # Mapping from run_config.yaml stage keys to base config keys
 STAGE_KEY_MAP = {
     1: {
-        'epochs': 'epochs_1st',
+        'max_steps': 'max_steps_1st',
     },
-    2: {
-        'epochs': 'epochs',
-    },
+    2: {},
 }
 
 
@@ -66,6 +64,9 @@ def main():
     parser.add_argument("--output", required=True, help="Output path for merged config")
     parser.add_argument("--stage", type=int, required=True, choices=[1, 2], help="Training stage")
     parser.add_argument("--num-speakers", type=int, default=1, help="Number of detected speakers")
+    parser.add_argument("--data-dir", default=None,
+                        help="Data directory (e.g. Data/my_model). "
+                             "When set, overrides train_data, val_data, and log_dir paths.")
     args = parser.parse_args()
 
     # Load base config
@@ -88,6 +89,12 @@ def main():
     # Merge: base <- top_overrides <- stage_overrides
     merged = deep_merge(base, top_overrides)
     merged = deep_merge(merged, stage_overrides)
+
+    # Override data paths if --data-dir is specified
+    if args.data_dir:
+        merged.setdefault('data_params', {})['train_data'] = os.path.join(args.data_dir, 'train_list.txt')
+        merged.setdefault('data_params', {})['val_data'] = os.path.join(args.data_dir, 'val_list.txt')
+        merged['log_dir'] = os.path.join(args.data_dir, 'output')
 
     # Auto-set multispeaker based on detected speakers
     if args.num_speakers > 1:

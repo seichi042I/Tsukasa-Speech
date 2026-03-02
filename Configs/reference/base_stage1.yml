@@ -1,9 +1,9 @@
 log_dir: "Data/output"
 first_stage_path: "first_stage.pth"
-save_freq: 2
+save_steps: 1000
 log_interval: 10
 device: "cuda"
-epochs_1st: 100
+max_steps_1st: 50000
 batch_size: 4
 max_len: 400
 pretrained_model: "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth"
@@ -81,7 +81,7 @@ loss_params:
 
   lambda_mono: 1.
   lambda_s2s: 1.
-  TMA_epoch: 50
+  TMA_step: 20000
 
   lambda_F0: 1.
   lambda_norm: 1.
@@ -90,8 +90,8 @@ loss_params:
   lambda_sty: 1.
   lambda_diff: 1.
 
-  diff_epoch: 20
-  joint_epoch: 50
+  diff_step: 10000
+  joint_step: 25000
 
 optimizer_params:
   lr: 0.0001

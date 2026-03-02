@@ -40,13 +40,30 @@ from accelerate.logging import get_logger
 logger = get_logger(__name__, log_level="DEBUG")
 
 
+INFERENCE_CONFIG_KEYS = [
+    'ASR_path', 'ASR_config', 'F0_path', 'PLBERT_dir',
+    'preprocess_params', 'model_params', 'data_params',
+]
+
+
+def save_inference_config(config, log_dir):
+    """Save a minimal inference config to log_dir/inference/config.yml."""
+    inference_dir = osp.join(log_dir, 'inference')
+    os.makedirs(inference_dir, exist_ok=True)
+    inference_cfg = {k: config[k] for k in INFERENCE_CONFIG_KEYS if k in config}
+    out_path = osp.join(inference_dir, 'config.yml')
+    with open(out_path, 'w', encoding='utf-8') as f:
+        yaml.dump(inference_cfg, f, default_flow_style=False, allow_unicode=True)
+    return out_path
+
+
 def find_latest_checkpoint(log_dir, prefix):
     """Find the latest checkpoint file matching {prefix}_NNNNN.pth pattern."""
     pattern = osp.join(log_dir, f'{prefix}_*.pth')
     files = glob.glob(pattern)
     if not files:
         return None
-    # Extract epoch/step number and sort
+    # Extract step number and sort
     def extract_number(f):
         basename = osp.basename(f)
         # Remove prefix and .pth, get the number part
@@ -63,16 +80,13 @@ def find_latest_checkpoint(log_dir, prefix):
     return files[-1][0]
 
 
-def cleanup_checkpoints(log_dir, prefix, keep_latest=3, keep_every=10):
-    """Remove old checkpoints, keeping latest N and every M-th epoch.
+def cleanup_checkpoints(log_dir, prefix, keep_latest=3):
+    """Remove old checkpoints, keeping only the latest N.
 
-    For epoch-based checkpoints (prefix like 'epoch_1st'):
-      - Always keep the latest `keep_latest` checkpoints
-      - Keep checkpoints where epoch % keep_every == 0
-      - Delete the rest
-
-    For step-based checkpoints (prefix like '2nd_phase', 'Sana_Finetune_'):
-      - Only keep the latest `keep_latest` checkpoints
+    Args:
+        log_dir: Directory containing checkpoints.
+        prefix: Checkpoint filename prefix (e.g. 'checkpoint_1st').
+        keep_latest: Number of most recent checkpoints to keep.
     """
     pattern = osp.join(log_dir, f'{prefix}_*.pth')
     files = glob.glob(pattern)
@@ -94,13 +108,10 @@ def cleanup_checkpoints(log_dir, prefix, keep_latest=3, keep_every=10):
     if len(files) <= keep_latest:
         return
 
-    is_epoch_based = prefix.startswith('epoch_')
     latest_files = set(f for f, _ in files[-keep_latest:])
 
     for filepath, number in files:
         if filepath in latest_files:
-            continue
-        if is_epoch_based and number % keep_every == 0:
             continue
         print(f'Removing old checkpoint: {osp.basename(filepath)}')
         os.remove(filepath)
@@ -110,13 +121,18 @@ def cleanup_checkpoints(log_dir, prefix, keep_latest=3, keep_every=10):
 def main(config_path):
     config = yaml.safe_load(open(config_path))
     
-    save_iter = 10500
+    save_steps = config.get('save_steps', 1000)
 
     log_dir = config['log_dir']
     if not osp.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
-    shutil.copy(config_path, osp.join(log_dir, osp.basename(config_path)))
+    ckpt_dir = osp.join(log_dir, 'checkpoints')
+    os.makedirs(ckpt_dir, exist_ok=True)
+    config_dst = osp.join(log_dir, osp.basename(config_path))
+    if osp.abspath(config_path) != osp.abspath(config_dst):
+        shutil.copy(config_path, config_dst)
+    save_inference_config(config, log_dir)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs], mixed_precision='bf16')    
+    accelerator = Accelerator(project_dir=log_dir, split_batches=True, kwargs_handlers=[ddp_kwargs], mixed_precision='bf16')
     if accelerator.is_main_process:
         writer = SummaryWriter(log_dir + "/tensorboard")
 
@@ -125,14 +141,12 @@ def main(config_path):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter('%(levelname)s:%(asctime)s: %(message)s'))
     logger.logger.addHandler(file_handler)
-    
+
     batch_size = config.get('batch_size', 10)
     device = accelerator.device
-    
-    epochs = config.get('epochs_1st', 200)
-    save_freq = config.get('save_freq', 2)
+
+    max_steps = config.get('max_steps_1st', 50000)
     log_interval = config.get('log_interval', 10)
-    saving_epoch = config.get('save_freq', 2)
     
     data_params = config.get('data_params', None)
     sr = config['preprocess_params'].get('sr', 24000)
@@ -191,8 +205,7 @@ def main(config_path):
     scheduler_params = {
         "max_lr": float(config['optimizer_params'].get('lr', 1e-4)),
         "pct_start": float(config['optimizer_params'].get('pct_start', 0.0)),
-        "epochs": epochs,
-        "steps_per_epoch": len(train_dataloader),
+        "total_steps": max_steps,
     }
     
     model_params = recursive_munch(config['model_params'])
@@ -204,7 +217,7 @@ def main(config_path):
     loss_test_record = list([])
 
     loss_params = Munch(config['loss_params'])
-    TMA_epoch = loss_params.TMA_epoch
+    TMA_step = loss_params.TMA_step
     
     for k in model:
         model[k] = accelerator.prepare(model[k])
@@ -230,18 +243,18 @@ def main(config_path):
         optimizer.schedulers[k] = accelerator.prepare(optimizer.schedulers[k])
     
     with accelerator.main_process_first():
-        # Auto-resume: check for existing epoch checkpoints first
-        latest_ckpt = find_latest_checkpoint(log_dir, 'epoch_1st')
+        # Auto-resume: check for existing step-based checkpoints (new path first, then legacy)
+        latest_ckpt = find_latest_checkpoint(ckpt_dir, 'checkpoint_1st')
+        if latest_ckpt is None:
+            latest_ckpt = find_latest_checkpoint(log_dir, 'checkpoint_1st')
         if latest_ckpt is not None:
             accelerator.print(f'Resuming from checkpoint: {latest_ckpt}')
-            model, optimizer, start_epoch, iters = load_checkpoint(
+            model, optimizer, _, iters = load_checkpoint(
                 model, optimizer, latest_ckpt, load_only_params=False)
-            start_epoch += 1  # resume from the next epoch
         elif config.get('pretrained_model', '') != '':
-            model, optimizer, start_epoch, iters = load_checkpoint(model,  optimizer, config['pretrained_model'],
+            model, optimizer, _, iters = load_checkpoint(model,  optimizer, config['pretrained_model'],
                                         load_only_params=config.get('load_only_params', True))
         else:
-            start_epoch = 0
             iters = 0
     
     # in case not distributed
@@ -259,7 +272,8 @@ def main(config_path):
                    sr, 
                    model_params.slm.sr).to(device)
 
-    for epoch in range(start_epoch, epochs):
+    epoch = 0
+    while iters < max_steps:
         running_loss = 0
         start_time = time.time()
 
@@ -347,7 +361,7 @@ def main(config_path):
             
             # discriminator loss
             
-            if epoch >= TMA_epoch:
+            if iters >= TMA_step:
                 optimizer.zero_grad()
                 d_loss = dl(wav.detach().unsqueeze(1).float(), y_rec.detach()).mean()
                 accelerator.backward(d_loss)
@@ -360,7 +374,7 @@ def main(config_path):
             optimizer.zero_grad()
             loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
             
-            if epoch >= TMA_epoch: # start TMA training
+            if iters >= TMA_step: # start TMA training
                 loss_s2s = 0
                 for _s2s_pred, _text_input, _text_length in zip(s2s_pred, texts, input_lengths):
                     loss_s2s += F.cross_entropy(_s2s_pred[:_text_length], _text_input[:_text_length])
@@ -392,15 +406,15 @@ def main(config_path):
             optimizer.step('style_encoder')
             optimizer.step('decoder')
             
-            if epoch >= TMA_epoch: 
+            if iters >= TMA_step: 
                 optimizer.step('text_aligner')
                 optimizer.step('pitch_extractor')
             
             iters = iters + 1
             
             if (i+1)%log_interval == 0 and accelerator.is_main_process:
-                log_print ('Epoch [%d/%d], Step [%d/%d], Mel Loss: %.5f, Gen Loss: %.5f, Disc Loss: %.5f, Mono Loss: %.5f, S2S Loss: %.5f, SLM Loss: %.5f'
-                        %(epoch+1, epochs, i+1, len(train_list)//batch_size, running_loss / log_interval, loss_gen_all, d_loss, loss_mono, loss_s2s, loss_slm), logger)
+                log_print ('Step [%d/%d], Mel Loss: %.5f, Gen Loss: %.5f, Disc Loss: %.5f, Mono Loss: %.5f, S2S Loss: %.5f, SLM Loss: %.5f'
+                        %(iters, max_steps, running_loss / log_interval, loss_gen_all, d_loss, loss_mono, loss_s2s, loss_slm), logger)
                 
                 writer.add_scalar('train/mel_loss', running_loss / log_interval, iters)
                 writer.add_scalar('train/gen_loss', loss_gen_all, iters)
@@ -413,19 +427,25 @@ def main(config_path):
                 
                 print('Time elasped:', time.time()-start_time)
                 
-            if (i+1)%save_iter == 0 and accelerator.is_main_process:
+            if iters % save_steps == 0 and accelerator.is_main_process:
 
-                print(f'Saving on step {epoch*len(train_dataloader)+i}...')
+                print(f'Saving on step {iters}...')
                 state = {
                     'net':  {key: model[key].state_dict() for key in model},
                     'optimizer': optimizer.state_dict(),
                     'iters': iters,
-                    'epoch': epoch,
                 }
-                save_path = osp.join(log_dir, f'2nd_phase_{epoch*len(train_dataloader)+i}.pth')
+                save_path = osp.join(ckpt_dir, f'checkpoint_1st_{iters}.pth')
                 torch.save(state, save_path)
-                cleanup_checkpoints(log_dir, '2nd_phase', keep_latest=3, keep_every=10)
-                                
+                cleanup_checkpoints(ckpt_dir, 'checkpoint_1st', keep_latest=3)
+
+            if iters >= max_steps:
+                break
+
+        # Increment epoch counter for dataloader shuffling
+        epoch += 1
+
+        # --- Validation (run at end of each data pass) ---
         loss_test = 0
 
         _ = [model[key].eval() for key in model]
@@ -455,13 +475,13 @@ def main(config_path):
 
                 # encode
                 t_en = model.text_encoder(texts, input_lengths, text_mask)
-                
+
                 asr = (t_en @ s2s_attn)
 
                 # get clips
                 mel_input_length_all = accelerator.gather(mel_input_length) # for balanced load
                 mel_len = min([int(mel_input_length.min().item() / 2 - 1), max_len // 2])
-                
+
                 en = []
                 gt = []
                 wav = []
@@ -494,10 +514,10 @@ def main(config_path):
                 iters_test += 1
 
         if accelerator.is_main_process:
-            print('Epochs:', epoch + 1)
+            print('Step:', iters)
             if iters_test > 0:
                 log_print('Validation loss: %.3f' % (loss_test / iters_test) + '\n\n\n\n', logger)
-                writer.add_scalar('eval/mel_loss', loss_test / iters_test, epoch + 1)
+                writer.add_scalar('eval/mel_loss', loss_test / iters_test, iters)
             else:
                 log_print('No validation data or all batches skipped\n', logger)
             print('\n\n\n')
@@ -521,7 +541,7 @@ def main(config_path):
                 eval_asr = (eval_t_en @ eval_s2s_attn)
 
                 attn_image = get_image(eval_s2s_attn[0].cpu().numpy().squeeze())
-                writer.add_figure('eval/attn', attn_image, epoch)
+                writer.add_figure('eval/attn', attn_image, iters)
 
                 for bib in range(len(eval_asr)):
                     mel_length = int(eval_mel_input_length[bib].item())
@@ -537,28 +557,12 @@ def main(config_path):
 
                     y_rec = model.decoder(en, F0_real, real_norm, s)
 
-                    writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), epoch, sample_rate=sr)
-                    writer.add_audio('gt/y' + str(bib), eval_waves[bib].squeeze(), epoch, sample_rate=sr)
+                    writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), iters, sample_rate=sr)
+                    writer.add_audio('gt/y' + str(bib), eval_waves[bib].squeeze(), iters, sample_rate=sr)
 
                     if bib >= 5:
                         break
 
-            if epoch % saving_epoch == 0:
-                val_loss = (loss_test / iters_test) if iters_test > 0 else float('inf')
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                print('Saving..')
-                state = {
-                    'net':  {key: model[key].state_dict() for key in model},
-                    'optimizer': optimizer.state_dict(),
-                    'iters': iters,
-                    'val_loss': val_loss,
-                    'epoch': epoch,
-                }
-                save_path = osp.join(log_dir, 'epoch_1st_%05d.pth' % epoch)
-                torch.save(state, save_path)
-                cleanup_checkpoints(log_dir, 'epoch_1st', keep_latest=3, keep_every=10)
-                                
     if accelerator.is_main_process:
         print('Saving..')
         val_loss = (loss_test / iters_test) if iters_test > 0 else float('inf')
@@ -567,9 +571,8 @@ def main(config_path):
             'optimizer': optimizer.state_dict(),
             'iters': iters,
             'val_loss': val_loss,
-            'epoch': epoch,
         }
-        save_path = osp.join(log_dir, config.get('first_stage_path', 'first_stage.pth'))
+        save_path = osp.join(ckpt_dir, config.get('first_stage_path', 'first_stage.pth'))
         torch.save(state, save_path)
 
         

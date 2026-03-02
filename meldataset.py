@@ -17,11 +17,33 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Sampler
 
+import re
 import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 import pandas as pd
+
+
+# Patterns that indicate non-verbal or unsuitable training samples
+_NONVERBAL_RE = re.compile(
+    r'^[\s.…!?\-ɴʔ]+$'       # text is only punctuation/fillers/glottal stops
+)
+_MIN_PHONEME_LENGTH = 5       # minimum IPA text length (after stripping punctuation)
+_PUNCTUATION_CHARS = set('….!?;:,—\'" ')
+
+
+def _is_nonverbal_text(text: str) -> bool:
+    """Return True if text is non-verbal or too short for meaningful TTS training."""
+    if not text or not text.strip():
+        return True
+    # Strip punctuation to measure actual phonemic content
+    stripped = ''.join(c for c in text if c not in _PUNCTUATION_CHARS)
+    if len(stripped) < _MIN_PHONEME_LENGTH:
+        return True
+    if _NONVERBAL_RE.match(text.strip()):
+        return True
+    return False
 
 _pad = "$"
 _punctuation = ';:,.!?¡¿—…"«»“” '
@@ -92,9 +114,28 @@ class FilePathDataset(torch.utils.data.Dataset):
         _valid_symbols = set(dicts.keys())
         _orig_len = len(_data_list)
         _data_list = [data for data in _data_list if len(data) >= 2 and all(c in _valid_symbols for c in data[1])]
-        _filtered = _orig_len - len(_data_list)
-        if _filtered > 0:
-            logger.warning("Filtered %d/%d entries with invalid symbols", _filtered, _orig_len)
+        _filtered_symbols = _orig_len - len(_data_list)
+        if _filtered_symbols > 0:
+            logger.warning("Filtered %d/%d entries with invalid symbols", _filtered_symbols, _orig_len)
+
+        # Filter out non-verbal / too-short text samples that cause loss spikes
+        _before_nonverbal = len(_data_list)
+        _nonverbal_examples = []
+        _clean_list = []
+        for data in _data_list:
+            if _is_nonverbal_text(data[1]):
+                if len(_nonverbal_examples) < 10:
+                    _nonverbal_examples.append(f"  {data[0]}|{data[1]}")
+            else:
+                _clean_list.append(data)
+        _filtered_nonverbal = _before_nonverbal - len(_clean_list)
+        if _filtered_nonverbal > 0:
+            logger.warning(
+                "Filtered %d/%d entries with non-verbal/short text (min_phoneme_length=%d). Examples:\n%s",
+                _filtered_nonverbal, _before_nonverbal, _MIN_PHONEME_LENGTH,
+                "\n".join(_nonverbal_examples))
+        _data_list = _clean_list
+
         self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
         self.text_cleaner = TextCleaner()
         self.sr = sr

@@ -1,18 +1,17 @@
 # ===========================================================================
-# ローカル開発用 docker-compose.yml
+# docker-compose.yml - Gradio UI で学習・推論を管理
 #
-# RunPodではこのファイルは使いません。
+# 使い方:
+#   docker compose up           # Gradio UI 起動 (http://localhost:7860)
+#   docker compose run shell    # デバッグシェル
+#
 # RunPodでの使い方:
 #   1. docker build -t username/tsukasa-speech . && docker push
 #   2. RunPod UI で Docker Image, Volume Mount, 環境変数を設定
 #      - MODEL_REPO=username/tsukasa-speech-models (初回DL用)
 #      - Volume: /runpod-volume → Data + モデルキャッシュ
-#   3. Pod起動 → モデルDL → 前処理 → 学習
-#
-# ローカルでの使い方:
-#   docker compose up train          # 自動GPU検出 → 前処理 → 学習
-#   docker compose up stage1         # Stage1のみ
-#   docker compose run shell         # デバッグシェル
+#      - HTTP Port: 7860 (Gradio UI), 6006 (TensorBoard)
+#   3. Pod起動 → Gradio UI からデータ前処理・学習・推論を操作
 #
 # モデル重みの提供方法 (いずれか):
 #   A. ローカルにマウント: ./Models, ./Utils にモデル重みがあれば自動認識
@@ -35,6 +34,7 @@ x-gpu-common: &gpu-common
     N_JOBS: ${N_JOBS:-4}
     MODEL_REPO: ${MODEL_REPO:-}
     HF_TOKEN: ${HF_TOKEN:-}
+    GRADIO_PORT: "7860"
   volumes:
     - ./Data:/app/Data
     # Model weights (mount local dirs if available)
@@ -46,20 +46,11 @@ x-gpu-common: &gpu-common
     - hf_cache:/root/.cache/huggingface
 
 services:
-  train:
+  app:
     <<: *gpu-common
-
-  stage1:
-    <<: *gpu-common
-    environment:
-      <<: *env-common
-      STAGE: "1"
-
-  stage2:
-    <<: *gpu-common
-    environment:
-      <<: *env-common
-      STAGE: "2"
+    ports:
+      - "${GRADIO_PORT:-7860}:7860"
+      - "6006:6006"
 
   shell:
     <<: *gpu-common

@@ -175,11 +175,18 @@ def compact_style_db(db, num_centroids=16, num_outliers=32):
         print(f'  [compact] Speaker {spk_val}: {n_total} -> {len(selected)} entries')
 
     compact = {
+        'db_type': 'compact',
         'bert_embeds': torch.cat(compact_bert),
         'style_ss': torch.cat(compact_ss),
         'style_sp': torch.cat(compact_sp),
         'speaker_ids': torch.cat(compact_spk),
     }
+
+    # Carry over per-speaker representative style vectors if present
+    if 'repr_style_ss' in db:
+        compact['repr_style_ss'] = db['repr_style_ss']
+        compact['repr_style_sp'] = db['repr_style_sp']
+        print(f'[compact] Preserved representative style vectors for speakers: {list(db["repr_style_ss"].keys())}')
 
     n_compact = compact['bert_embeds'].shape[0]
     n_full = bert_embeds.shape[0]
@@ -190,22 +197,38 @@ def compact_style_db(db, num_centroids=16, num_outliers=32):
 def main():
     parser = argparse.ArgumentParser(
         description='Compact a full style DB into a lightweight per-speaker store')
-    parser.add_argument('--input', '-i', required=True, help='Path to full style_db.pt')
-    parser.add_argument('--output', '-o', required=True, help='Output path for compact DB')
+    parser.add_argument('--model-dir', '-d', default=None,
+                        help='Model directory (e.g. Data/output/MidVRAM). '
+                             'Reads inference/style_db.pt, writes inference/style_db_compact.pt')
+    parser.add_argument('--input', '-i', default=None, help='Path to full style_db.pt (override)')
+    parser.add_argument('--output', '-o', default=None, help='Output path for compact DB (override)')
     parser.add_argument('--num-centroids', type=int, default=16,
                         help='Number of centroid (average) entries per speaker')
     parser.add_argument('--num-outliers', type=int, default=32,
                         help='Number of outlier entries per speaker')
     args = parser.parse_args()
 
-    print(f'Loading {args.input}...')
-    db = torch.load(args.input, map_location='cpu')
+    input_path = args.input
+    output_path = args.output
+
+    if args.model_dir is not None:
+        inference_dir = os.path.join(args.model_dir, 'inference')
+        if input_path is None:
+            input_path = os.path.join(inference_dir, 'style_db.pt')
+        if output_path is None:
+            output_path = os.path.join(inference_dir, 'style_db_compact.pt')
+
+    if input_path is None or output_path is None:
+        parser.error('Either --model-dir or both --input and --output are required')
+
+    print(f'Loading {input_path}...')
+    db = torch.load(input_path, map_location='cpu')
 
     compact = compact_style_db(db, args.num_centroids, args.num_outliers)
 
-    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    torch.save(compact, args.output)
-    print(f'Saved to {args.output}')
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    torch.save(compact, output_path)
+    print(f'Saved to {output_path}')
 
 
 if __name__ == '__main__':

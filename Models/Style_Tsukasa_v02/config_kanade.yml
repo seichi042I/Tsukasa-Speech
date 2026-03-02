@@ -3,8 +3,8 @@ first_stage_path: "/home/austin/disk2/llmvcs/tt/stylekan/Models/Style_Kanade_v02
 save_freq: 1
 log_interval: 10
 device: "cuda"
-epochs_1st: 30 # number of epochs for first stage training (pre-training)
-epochs_2nd: 20 # number of peochs for second stage training (joint training)
+max_steps_1st: 15000
+max_steps: 10000
 batch_size: 64
 max_len: 4000 # maximum number of frames
 pretrained_model: "/home/austin/disk2/llmvcs/tt/stylekan/Models/Style_Kanade_v02/epoch_2nd_00007.pth"
@@ -94,7 +94,7 @@ loss_params:
     
     lambda_mono: 1. # monotonic alignment loss (1st stage, TMA)
     lambda_s2s: 1. # sequence-to-sequence loss (1st stage, TMA)
-    TMA_epoch: 5 # TMA starting epoch (1st stage)
+    TMA_step: 2500
 
     lambda_F0: 1. # F0 reconstruction loss (2nd stage)
     lambda_norm: 1. # norm reconstruction loss (2nd stage)
@@ -103,8 +103,8 @@ loss_params:
     lambda_sty: 1. # style reconstruction loss (2nd stage)
     lambda_diff: 1. # score matching loss (2nd stage)
     
-    diff_epoch: 4 # style diffusion starting epoch (2nd stage)
-    joint_epoch: 999 # joint training starting epoch (2nd stage)
+    diff_step: 2000
+    joint_step: 999999
 
 optimizer_params:
   lr: 0.0001 # general learning rate

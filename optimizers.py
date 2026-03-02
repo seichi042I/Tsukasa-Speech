@@ -57,8 +57,7 @@ def define_scheduler(optimizer, params):
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=params.get("max_lr", 2e-4),
-        epochs=params.get("epochs", 200),
-        steps_per_epoch=params.get("steps_per_epoch", 1000),
+        total_steps=params.get("total_steps", 50000),
         pct_start=params.get("pct_start", 0.0),
         div_factor=1,
         final_div_factor=1,

@@ -6,11 +6,14 @@ Iterates over training data and extracts per-utterance:
   - Prosodic style vector (128-dim)
   - Speaker ID
 
-Usage:
+Usage (simple — auto-discovers config and checkpoint):
+    python precompute_styles.py --model-dir Data/output/MidVRAM
+
+Usage (explicit paths):
     python precompute_styles.py \
-        --config Configs/config_high_vram.yml \
-        --checkpoint Data/output/HighVRAM/inference_5000.pth \
-        --output Data/output/HighVRAM/style_db.pt \
+        --config Configs/config.yml \
+        --checkpoint Data/output/MidVRAM/inference/inference_5000.pth \
+        --output Data/output/MidVRAM/inference/style_db.pt \
         [--batch-size 16] [--device cuda]
 """
 
@@ -24,6 +27,7 @@ import os
 
 from meldataset import TextCleaner, preprocess
 from utils import length_to_mask
+from compact_style_db import kmeans
 
 # StyleEncoder has 4x half-downsample then 5x5 conv → mel needs >= 80 frames
 MIN_MEL_FRAMES = 80
@@ -130,11 +134,60 @@ def build_style_db(model, train_data_path, root_path='', sr=24000,
 
     print(f'[style_db] Collected {len(all_bert)} style entries')
 
+    style_ss = torch.stack(all_ss)
+    style_sp = torch.stack(all_sp)
+    speaker_ids = torch.tensor(all_spk)
+
+    # Compute per-speaker representative style vectors via clustering:
+    # cluster style vectors, find the largest cluster, pick the sample
+    # nearest to that cluster's centroid as the representative.
+    unique_speakers = speaker_ids.unique().sort().values
+    repr_style_ss = {}
+    repr_style_sp = {}
+    num_repr_clusters = 16
+
+    for spk in unique_speakers:
+        spk_val = spk.item()
+        mask = speaker_ids == spk_val
+        spk_ss = style_ss[mask]
+        spk_sp = style_sp[mask]
+        n_samples = spk_ss.shape[0]
+
+        if n_samples <= 1:
+            repr_style_ss[spk_val] = spk_ss[0]
+            repr_style_sp[spk_val] = spk_sp[0]
+            print(f'  [style_db] Speaker {spk_val}: representative from {n_samples} entry')
+            continue
+
+        k = min(num_repr_clusters, n_samples)
+        style_concat = torch.cat([spk_ss, spk_sp], dim=1)
+        centroids, assignments = kmeans(style_concat, k)
+
+        # Find the cluster with the most samples
+        cluster_counts = torch.bincount(assignments, minlength=k)
+        largest_cluster = cluster_counts.argmax().item()
+
+        # Find the sample nearest to the centroid of the largest cluster
+        cluster_mask = assignments == largest_cluster
+        cluster_indices = cluster_mask.nonzero(as_tuple=True)[0]
+        cluster_points = style_concat[cluster_indices]
+        centroid = centroids[largest_cluster]
+        dists = (cluster_points - centroid.unsqueeze(0)).norm(dim=1)
+        nearest_idx = cluster_indices[dists.argmin().item()].item()
+
+        repr_style_ss[spk_val] = spk_ss[nearest_idx]
+        repr_style_sp[spk_val] = spk_sp[nearest_idx]
+        print(f'  [style_db] Speaker {spk_val}: representative from cluster {largest_cluster} '
+              f'({cluster_counts[largest_cluster].item()}/{n_samples} samples)')
+
     return {
+        'db_type': 'full',
         'bert_embeds': torch.stack(all_bert),
-        'style_ss': torch.stack(all_ss),
-        'style_sp': torch.stack(all_sp),
-        'speaker_ids': torch.tensor(all_spk),
+        'style_ss': style_ss,
+        'style_sp': style_sp,
+        'speaker_ids': speaker_ids,
+        'repr_style_ss': repr_style_ss,
+        'repr_style_sp': repr_style_sp,
     }
 
 
@@ -147,26 +200,49 @@ def save_style_db(db, output_path):
     print(f'  style_ss:    {db["style_ss"].shape}')
     print(f'  style_sp:    {db["style_sp"].shape}')
     print(f'  speaker_ids: {db["speaker_ids"].shape}')
+    print(f'  repr_style_ss: {list(db["repr_style_ss"].keys())} speakers')
+    print(f'  repr_style_sp: {list(db["repr_style_sp"].keys())} speakers')
 
 
 def main():
     parser = argparse.ArgumentParser(description='Precompute style database for reference-free inference')
-    parser.add_argument('--config', '-c', required=True, help='Path to config YAML')
-    parser.add_argument('--checkpoint', '-m', required=True, help='Path to inference checkpoint (.pth)')
-    parser.add_argument('--output', '-o', required=True, help='Output .pt path for style DB')
+    parser.add_argument('--model-dir', '-d', default=None,
+                        help='Model directory (e.g. Data/output/MidVRAM). '
+                             'Auto-discovers config and checkpoint, saves to inference/style_db.pt')
+    parser.add_argument('--config', '-c', default=None, help='Path to config YAML (override)')
+    parser.add_argument('--checkpoint', '-m', default=None, help='Path to inference checkpoint (override)')
+    parser.add_argument('--output', '-o', default=None, help='Output .pt path for style DB (override)')
     parser.add_argument('--batch-size', type=int, default=16, help='Batch size for processing')
     parser.add_argument('--device', default='cuda', help='Device (cuda or cpu)')
     args = parser.parse_args()
 
-    from inference import load_inference_model
+    from inference import load_inference_model, resolve_model_dir
 
-    config = yaml.safe_load(open(args.config))
+    config_path = args.config
+    checkpoint_path = args.checkpoint
+    output_path = args.output
+
+    if args.model_dir is not None:
+        auto_config, auto_ckpt, _ = resolve_model_dir(args.model_dir)
+        if config_path is None:
+            config_path = auto_config
+        if checkpoint_path is None:
+            checkpoint_path = auto_ckpt
+        if output_path is None:
+            output_path = os.path.join(args.model_dir, 'inference', 'style_db.pt')
+
+    if config_path is None or checkpoint_path is None:
+        parser.error('Either --model-dir or both --config and --checkpoint are required')
+    if output_path is None:
+        parser.error('Either --model-dir or --output is required')
+
+    config = yaml.safe_load(open(config_path))
     device = args.device
     sr = config['preprocess_params'].get('sr', 24000)
     data_params = config['data_params']
 
-    print(f'Loading model from {args.checkpoint}...')
-    model, _ = load_inference_model(config, args.checkpoint, device)
+    print(f'Loading model from {checkpoint_path}...')
+    model, _ = load_inference_model(config, checkpoint_path, device)
 
     db = build_style_db(
         model,
@@ -176,7 +252,7 @@ def main():
         batch_size=args.batch_size,
         device=device,
     )
-    save_style_db(db, args.output)
+    save_style_db(db, output_path)
 
 
 if __name__ == '__main__':

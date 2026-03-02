@@ -15,14 +15,14 @@
 
 log_dir: "Data/output/LowVRAM"
 first_stage_path: "first_stage.pth"
-save_freq: 1
+save_steps: 1000
 log_interval: 10
 device: "cuda"
-epochs_1st: 100
-epochs_2nd: 50
-epochs: 50          # used by finetune_accelerate.py
+max_steps_1st: 50000
+max_steps: 1000
+stage1_steps: 1000   # Stage1 warmup steps before Stage2 (0 to skip)
 batch_size: 2
-max_len: 2500       # ~31s of audio at 24kHz with hop_length=300
+max_len: 400       # ~31s of audio at 24kHz with hop_length=300
 length_bucket: true           # Enable length-based bucket batching
 num_buckets: 4                # Number of length buckets (quartile split)
 min_batch_size: 2             # Minimum batch size for longest bucket
@@ -102,7 +102,7 @@ loss_params:
 
   lambda_mono: 1.
   lambda_s2s: 1.
-  TMA_epoch: 50
+  TMA_step: 20000
 
   lambda_F0: 1.
   lambda_norm: 1.
@@ -111,8 +111,8 @@ loss_params:
   lambda_sty: 1.
   lambda_diff: 1.
 
-  diff_epoch: 0        # start diffusion immediately (pretrained model already has diffusion weights)
-  joint_epoch: 999     # disable SLM joint training (no Whisper loaded)
+  diff_step: 0         # start diffusion immediately (pretrained model already has diffusion weights)
+  joint_step: 999999   # disable SLM joint training (no Whisper loaded)
 
 optimizer_params:
   lr: 0.0001

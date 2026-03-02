@@ -26,6 +26,7 @@ Usage:
   python preprocess_data.py --data-dir Data --cache-wavs --cache-dir /tmp/wave_cache
 """
 import os
+import re
 import sys
 import random
 import argparse
@@ -75,7 +76,6 @@ def _phonemize_single(item):
         return None, f"Text too short: {filename} -> '{japanese_text}'"
 
     # Skip non-verbal sounds enclosed in parentheses, e.g. (泣き声), (溜息)
-    import re
     if re.fullmatch(r'[（(].+?[)）]', japanese_text.strip()):
         return None, f"Non-verbal sound: {filename} -> '{japanese_text}'"
 
@@ -90,6 +90,14 @@ def _phonemize_single(item):
     # Skip entries where IPA text contains parenthesized non-verbal sounds
     if '(' in ipa_text or ')' in ipa_text or '（' in ipa_text or '）' in ipa_text:
         return None, f"Non-verbal sound in IPA: {filename} -> '{ipa_text}'"
+
+    # Skip non-verbal / too-short IPA text (fillers, interjections, silence)
+    _punct_chars = set('….!?;:,—\'" ')
+    _stripped_ipa = ''.join(c for c in ipa_text if c not in _punct_chars)
+    if len(_stripped_ipa) < 5:
+        return None, f"IPA too short ({len(_stripped_ipa)} phonemic chars): {filename} -> '{ipa_text}'"
+    if re.fullmatch(r'[\s.…!?\-ɴʔ]+', ipa_text.strip()):
+        return None, f"Non-verbal IPA pattern: {filename} -> '{ipa_text}'"
 
     # Skip entries with characters outside the valid IPA symbol set
     _valid_chars = set(

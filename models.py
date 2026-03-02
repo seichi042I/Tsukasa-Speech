@@ -973,11 +973,9 @@ def load_checkpoint(model, optimizer, path, load_only_params=False, ignore_modul
             print('%s loaded' % key)
 
     if not load_only_params:
-        epoch = state["epoch"]
-        iters = state["iters"]
+        iters = state.get("iters", 0)
         optimizer.load_state_dict(state["optimizer"])
     else:
-        epoch = 0
         iters = 0
-        
-    return model, optimizer, epoch, iters
+
+    return model, optimizer, 0, iters

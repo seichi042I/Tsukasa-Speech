@@ -65,8 +65,8 @@ fi
 echo ""
 echo "=== Speaker Detection ==="
 
-NUM_SPEAKERS=$(python -c "
-import os
+SPEAKER_INFO=$(python -c "
+import os, sys
 data_dir = '${DATA_DIR}'
 speakers = sorted([
     d for d in os.listdir(data_dir)
@@ -76,8 +76,10 @@ speakers = sorted([
 ])
 print(len(speakers))
 if speakers:
-    print('Speakers: ' + ', '.join(speakers), file=__import__('sys').stderr)
-" 2>&1 | tee /dev/stderr | head -1)
+    print('Speakers: ' + ', '.join(speakers))
+")
+NUM_SPEAKERS=$(echo "$SPEAKER_INFO" | head -1)
+echo "$SPEAKER_INFO" | tail -n +2
 
 echo "Detected $NUM_SPEAKERS speaker(s)"
 
@@ -99,14 +101,16 @@ python merge_config.py \
     --run-config "$RUN_CONFIG" \
     --output "$STAGE1_CONFIG" \
     --stage 1 \
-    --num-speakers "$NUM_SPEAKERS"
+    --num-speakers "$NUM_SPEAKERS" \
+    --data-dir "$DATA_DIR"
 
 python merge_config.py \
     --base "$BASE_CONFIG" \
     --run-config "$RUN_CONFIG" \
     --output "$STAGE2_CONFIG" \
     --stage 2 \
-    --num-speakers "$NUM_SPEAKERS"
+    --num-speakers "$NUM_SPEAKERS" \
+    --data-dir "$DATA_DIR"
 
 # ---- Step 5: Preprocess if needed ----
 TRAIN_LIST="${DATA_DIR}/train_list.txt"

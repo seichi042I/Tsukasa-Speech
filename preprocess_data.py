@@ -91,6 +91,17 @@ def _phonemize_single(item):
     if '(' in ipa_text or ')' in ipa_text or '（' in ipa_text or '）' in ipa_text:
         return None, f"Non-verbal sound in IPA: {filename} -> '{ipa_text}'"
 
+    # Skip entries with characters outside the valid IPA symbol set
+    _valid_chars = set(
+        "$;:,.!?¡¿—…\"«»\"\u201C\u201D "
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘"
+        "\u0329\u02BC\u1D7B"
+    )
+    invalid_chars = set(ipa_text) - _valid_chars
+    if invalid_chars:
+        return None, f"Invalid IPA chars {invalid_chars}: {filename} -> '{ipa_text}'"
+
     entry = f"{wav_rel_path}|{ipa_text}|{speaker_id}"
     return entry, None
 

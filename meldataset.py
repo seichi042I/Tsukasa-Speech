@@ -38,13 +38,16 @@ for i in range(len((symbols))):
 class TextCleaner:
     def __init__(self, dummy=None):
         self.word_index_dictionary = dicts
+        self._warned = set()
     def __call__(self, text):
         indexes = []
         for char in text:
             try:
                 indexes.append(self.word_index_dictionary[char])
             except KeyError:
-                print(text)
+                if char not in self._warned:
+                    self._warned.add(char)
+                    logger.warning("Unknown symbol '%s' (U+%04X) in: %s", char, ord(char), text)
         return indexes
 
 np.random.seed(1)
@@ -85,8 +88,13 @@ class FilePathDataset(torch.utils.data.Dataset):
         mel_params = MEL_PARAMS
 
         _data_list = [l.strip().split('|') for l in data_list]
-        # Filter out entries with parenthesized non-verbal sounds (e.g. "(toiki)")
-        _data_list = [data for data in _data_list if len(data) >= 2 and '(' not in data[1] and ')' not in data[1]]
+        # Filter out entries containing characters outside the valid symbol set
+        _valid_symbols = set(dicts.keys())
+        _orig_len = len(_data_list)
+        _data_list = [data for data in _data_list if len(data) >= 2 and all(c in _valid_symbols for c in data[1])]
+        _filtered = _orig_len - len(_data_list)
+        if _filtered > 0:
+            logger.warning("Filtered %d/%d entries with invalid symbols", _filtered, _orig_len)
         self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
         self.text_cleaner = TextCleaner()
         self.sr = sr

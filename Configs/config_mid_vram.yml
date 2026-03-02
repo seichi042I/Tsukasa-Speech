@@ -15,13 +15,14 @@
 log_dir: "Data/output/MidVRAM"
 first_stage_path: "first_stage.pth"
 save_freq: 1
+save_steps: 1000
 log_interval: 10
 device: "cuda"
 epochs_1st: 100
 epochs_2nd: 50
 epochs: 50
 batch_size: 2
-max_len: 2500
+max_len: 800
 length_bucket: true           # Enable length-based bucket batching
 num_buckets: 4                # Number of length buckets (quartile split)
 min_batch_size: 2             # Minimum batch size for longest bucket

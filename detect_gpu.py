@@ -5,9 +5,9 @@ Detect GPU VRAM and recommend a training config tier.
 Returns one of: low, mid, high  (printed to stdout)
 
 Thresholds (based on largest single GPU):
-  - low  : < 20 GB   (~16GB class: RTX 4060Ti 16GB, RTX 3080, etc.)
-  - mid  : 20-36 GB  (RTX 3090, RTX 4090, A5000, V100 32GB, etc.)
-  - high : >= 36 GB  (A100, A40, H100, multi-GPU aggregated, etc.)
+  - low  : < 24 GB   (~16GB class: RTX 4060Ti 16GB, RTX 3080, etc.)
+  - mid  : 24-48 GB  (RTX 3090, RTX 4090, A5000, V100 32GB, etc.)
+  - high : >= 48 GB  (A100, A40, H100, multi-GPU aggregated, etc.)
 
 Usage:
   python detect_gpu.py              # prints tier name
@@ -30,8 +30,8 @@ except ImportError:
 
 # VRAM thresholds in MB
 TIER_THRESHOLDS = {
-    'low': 20 * 1024,     # < 20 GB
-    'mid': 36 * 1024,     # 20-36 GB
+    'low': 24 * 1024,     # < 24 GB
+    'mid': 48 * 1024,     # 24-48 GB
     # 'high': >= 36 GB
 }
 

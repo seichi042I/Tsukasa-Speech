@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker system info)",
+      "Bash(docker tag tsukasa-speech seichi0421/tsukasa-speech:latest)",
+      "Bash(docker push seichi0421/tsukasa-speech:latest)",
+      "Bash(docker logout)",
+      "Bash(docker login)",
+      "Bash(du -sh /home/seichi/tts/Tsukasa_Speech/Models/* /home/seichi/tts/Tsukasa_Speech/Utils/*)",
+      "Bash(docker images --format \"table {{.Repository}}\\\\t{{.Tag}}\\\\t{{.Size}}\")",
+      "Bash(docker history seichi0421/tsukasa-speech:latest --format \"table {{.CreatedBy}}\\\\t{{.Size}}\")",
+      "Bash(docker pull pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime --dry-run)",
+      "Bash(docker manifest inspect pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime)",
+      "Bash(python3 -c \"import json,sys; m=json.load\\(sys.stdin\\); print\\(sum\\(l.get\\(''size'',0\\) for l in m.get\\(''layers'',[]\\)\\) / 1e9, ''GB''\\)\")",
+      "Bash(grep -rn \"KTD\\\\|ktd\\\\|prompt_enc\\\\|text_enc\" *.py Utils/ --include=\"*.py\")",
+      "Bash(DOCKER_BUILDKIT=1 docker build --progress=plain -t tsukasa-speech-optimized .)",
+      "Bash(docker history tsukasa-speech-optimized:latest --format \"table {{.CreatedBy}}\\\\t{{.Size}}\")",
+      "Bash(docker save tsukasa-speech-optimized:latest)",
+      "Read(//home/seichi/tts/Tsukasa_Speech/{printf \"\"Uncompressed tar: %.1f GB\\\\n\"\", $1/1024/1024/**)",
+      "Bash(gzip -1)",
+      "Read(//home/seichi/tts/Tsukasa_Speech/{printf \"\"Compressed \\(gzip\\): %.1f GB\\\\n\"\", $1/1024/1024/**)",
+      "Bash(docker tag tsukasa-speech-optimized:latest seichi0421/tsukasa-speech:latest)",
+      "Bash(docker build -t tsukasa-speech-optimized:latest -t seichi0421/tsukasa-speech:latest .)",
+      "Bash(pip install -q huggingface_hub)",
+      "Bash(python3 -c \":*)",
+      "Bash(docker images --filter \"reference=*tsukasa*\" --format \"{{.Repository}}:{{.Tag}}\")",
+      "Bash(docker images --format \"{{.Repository}}:{{.Tag}}\")",
+      "Bash(docker build -t seichi0421/tsukasa-speech:latest .)",
+      "Bash(grep -r \"reference_sample_wavs\\\\|Inference\" /home/seichi/tts/Tsukasa_Speech/train*.py /home/seichi/tts/Tsukasa_Speech/finetune*.py /home/seichi/tts/Tsukasa_Speech/preprocess* /home/seichi/tts/Tsukasa_Speech/detect* /home/seichi/tts/Tsukasa_Speech/merge_config* /home/seichi/tts/Tsukasa_Speech/download*)",
+      "Bash(grep -n \"OOD_data\\\\|OOD_LargeScale\" /home/seichi/tts/Tsukasa_Speech/Configs/*.yml)",
+      "Bash(grep -rn \"text_utils\\\\|from text_utils\\\\|import text_utils\" /home/seichi/tts/Tsukasa_Speech/*.py)"
+    ],
+    "additionalDirectories": [
+      "/home/seichi/tts/Tsukasa_Speech"
+    ]
+  }
+}

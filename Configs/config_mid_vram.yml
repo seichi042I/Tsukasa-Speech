@@ -1,0 +1,128 @@
+# =============================================================================
+# Mid-range VRAM config (24GB-32GB GPU: RTX 3090, RTX 4090, A5000, etc.)
+# =============================================================================
+# Key adjustments:
+#   - batch_size: 4
+#   - max_len: 400 (default, ~5s audio clips)
+#   - lambda_slm: 1 (Whisper SLM enabled)
+#   - joint_step: 30000 (SLM joint training enabled)
+#
+# Usage:
+#   accelerate launch train_first.py -p Configs/config_mid_vram.yml
+#   accelerate launch finetune_accelerate.py -p Configs/config_mid_vram.yml
+# =============================================================================
+
+log_dir: "Data/output/MidVRAM"
+first_stage_path: "first_stage.pth"
+save_steps: 1000
+log_interval: 10
+device: "cuda"
+max_steps_1st: 50000
+max_steps: 50000
+stage1_steps: 1000   # Stage1 warmup steps before Stage2 (0 to skip)
+batch_size: 2
+max_len: 800
+length_bucket: true           # Enable length-based bucket batching
+num_buckets: 4                # Number of length buckets (quartile split)
+min_batch_size: 2             # Minimum batch size for longest bucket
+max_batch_size: 6             # Maximum batch size for shortest bucket
+pretrained_model: "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth"
+second_stage_load_pretrained: true
+load_only_params: true
+
+F0_path: "Utils/JDC/bst.t7"
+ASR_config: "Utils/ASR/config.yml"
+ASR_path: "Utils/ASR/bst_00080.pth"
+PLBERT_dir: 'Utils/PLBERT/'
+
+data_params:
+  train_data: "Data/train_list.txt"
+  val_data: "Data/val_list.txt"
+  root_path: ""
+  OOD_data: "OOD_LargeScale_.csv"
+  min_length: 100
+
+preprocess_params:
+  sr: 24000
+  spect_params:
+    n_fft: 2048
+    win_length: 1200
+    hop_length: 300
+
+model_params:
+  multispeaker: true
+
+  dim_in: 64
+  hidden_dim: 512
+  max_conv_dim: 512
+  n_layer: 3
+  n_mels: 80
+
+  n_token: 178
+  max_dur: 50
+  style_dim: 128
+
+  dropout: 0.2
+
+  decoder:
+    type: 'istftnet'
+    resblock_kernel_sizes: [3,7,11]
+    upsample_rates: [10, 6]
+    upsample_initial_channel: 512
+    resblock_dilation_sizes: [[1,3,5], [1,3,5], [1,3,5]]
+    upsample_kernel_sizes: [20, 12]
+    gen_istft_n_fft: 20
+    gen_istft_hop_size: 5
+
+  slm:
+    model: 'Respair/Whisper_Large_v2_Encoder_Block'
+    sr: 16000
+    hidden: 1280
+    nlayers: 33
+    initial_channel: 64
+
+  diffusion:
+    embedding_mask_proba: 0.1
+    transformer:
+      num_layers: 3
+      num_heads: 8
+      head_features: 64
+      multiplier: 2
+    dist:
+      sigma_data: 0.2
+      estimate_sigma_data: true
+      mean: -3.0
+      std: 1.0
+
+loss_params:
+  lambda_mel: 10.
+  lambda_gen: 1.
+  lambda_slm: 1.       # Whisper SLM enabled
+
+  lambda_mono: 1.
+  lambda_s2s: 1.
+  TMA_step: 20000
+
+  lambda_F0: 1.
+  lambda_norm: 1.
+  lambda_dur: 1.
+  lambda_ce: 20.
+  lambda_sty: 1.
+  lambda_diff: 1.
+
+  diff_step: 0         # start diffusion immediately (pretrained model already has diffusion weights)
+  joint_step: 30000    # SLM joint training enabled
+
+optimizer_params:
+  lr: 0.0001
+  bert_lr: 0.00001
+  ft_lr: 0.00001
+
+slmadv_params:
+  min_len: 400
+  max_len: 500
+  batch_percentage: 0.5
+  iter: 20
+  thresh: 5
+  scale: 0.01
+  sig: 1.5

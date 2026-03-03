@@ -39,14 +39,14 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/tmp/wheels \
 
 WORKDIR /app
 
-# Layer 1: Library code + configs (small, ~200KB — changes rarely)
+# Layer 1: Library code + configs (changes rarely)
+COPY tsukasa_speech/ tsukasa_speech/
 COPY Utils/ Utils/
-COPY Modules/ Modules/
 COPY Configs/ Configs/
 COPY OOD_LargeScale_.csv .
 
-# Layer 2: Application code (small, changes frequently)
-COPY *.py ./
+# Layer 2: Accelerate shims + entrypoints (changes frequently)
+COPY train_first.py finetune_accelerate.py ./
 COPY entrypoint.sh train.sh ./
 RUN chmod +x entrypoint.sh train.sh \
     && ln -s /app/train.sh /usr/local/bin/train \

@@ -5,25 +5,30 @@ language:
 - ja
 pipeline_tag: text-to-speech
 tags:
-- '#StyleTTS'
-- '#Japanese'
-- Diffusion
-- Prompt
-- '#TTS'
-- '#TexttoSpeech'
-- '#speech'
-- '#StyleTTS2'
+
+- 'StyleTTS'
+- 'Japanese'
+- 'Diffusion'
+- 'Prompt'
+- 'TTS'
+- 'TexttoSpeech'
+- 'speech'
+- 'StyleTTS2'
+- 'LLM'
+- 'anime'
+- 'voice'
+
 ---
 
 <div style="text-align:center;">
   <img src="https://i.postimg.cc/y6gT18Tn/Untitled-design-1.png" alt="Logo" style="width:300px; height:auto;">
 </div>
 
-# Tsukasa 司 Speech — RunPod 学習パイプライン
+# Tsukasa 司 Speech
 
-このリポジトリは Tsukasa Speech の **自己学習・ファインチューニング用パイプライン** です。[RunPod](https://runpod.io) または CUDA 対応ホストで動作する Docker イメージとして提供されます。
+日本語 TTS モデル。学習パイプライン・Gradio UI・Docker 対応。
 
-英語版 README は [README.md](README.md)。
+English README: [README.md](README.md)
 
 オリジナルモデル / デモ: [Respair/Tsukasa_Speech](https://huggingface.co/Respair/Tsukasa_Speech)
 
@@ -31,25 +36,88 @@ tags:
 
 ## Tsukasa Speech とは
 
-[StyleTTS 2](https://github.com/yl4579/StyleTTS2) をベースにした日本語 TTS モデルで、以下の変更が加えられています:
+[StyleTTS 2](https://github.com/yl4579/StyleTTS2) をベースにした日本語テキスト音声合成モデルです:
 
-- テキスト・プロソディエンコーダーに mLSTM (xLSTM) レイヤーを採用
-- SLM discriminator に WavLM ではなく Whisper Large v2 エンコーダーを使用
-- PL-BERT、F0 ピッチ抽出器、テキストアライナーをゼロから再学習
-- 24 kHz ISTFTNet デコーダー
-- プロンプトによるスタイル転送
-- 日本語・ローマ字混在テキスト対応のフォネマイザー
+- テキスト・プロソディエンコーダーに **mLSTM (xLSTM)** レイヤーを採用
+- SLM discriminator に **Whisper Large v2** エンコーダーを使用（WavLM を置換）
+- **PL-BERT、F0 抽出器、テキストアライナー**を日本語向けにゼロから再学習
+- **ISTFTNet** デコーダー（24 kHz）
+- リファレンス音声またはスタイル DB による**プロンプトスタイル転送**
+- 日本語・ローマ字混在入力対応の**スマートフォネマイザー**
 
 ---
 
-## クイックスタート (RunPod)
+## 機能
 
-### 1. データの準備
+### Gradio UI
 
-RunPod ネットワークボリュームに学習データを配置します:
+2 タブ構成の Web インターフェース（`http://localhost:7860`）:
+
+- **音声合成タブ** — リファレンス音声、スタイル DB ルックアップ、ピッチエディター、文分割による音声合成
+- **学習タブ** — データ前処理、Stage 1 / Stage 2 学習、進捗監視をブラウザから操作
+
+### 学習パイプライン
+
+GPU 自動検出による 2 段階学習:
+
+1. **Stage 1** — 音響事前学習（テキストエンコーダー、スタイルエンコーダー、デコーダー）
+2. **Stage 2** — SLM Adversarial Loss と拡散デコーダーによるジョイントファインチューニング
+
+### スタイルシステム
+
+- **リファレンス音声** — 任意の WAV ファイルからスタイル抽出
+- **スタイル DB** — 話者ごとに事前計算されたスタイルベクトルによるテキスト類似度ルックアップ
+- **ピッチエディター** — 最終合成前の F0 カーブインタラクティブ編集
+
+---
+
+## クイックスタート
+
+### Docker（推奨）
+
+```bash
+docker compose up
+```
+
+`http://localhost:7860` で Gradio UI にアクセス。学習データは `./Data/` に配置（自動マウント）。
+
+モデル重みの提供方法:
+- ローカルマウント: リポジトリルートに `Models/` と `Utils/` の重みファイルを配置
+- `MODEL_REPO` 環境変数を設定して HuggingFace から自動ダウンロード
+
+### RunPod
+
+```bash
+# ビルド & プッシュ
+docker build -t your-dockerhub/tsukasa-speech .
+docker push your-dockerhub/tsukasa-speech
+```
+
+RunPod UI での設定:
+
+| 設定 | 値 |
+|---|---|
+| Container Image | `your-dockerhub/tsukasa-speech` |
+| Volume Mount | `/runpod-volume`（`Data/` ディレクトリを含むネットワークボリューム） |
+| HTTP Port | `7860`（Gradio UI）、`6006`（TensorBoard） |
+| `MODEL_REPO` 環境変数 | HuggingFace リポジトリ ID（例: `Respair/Tsukasa_Speech`） |
+| `HF_TOKEN` 環境変数 | （任意）プライベートリポジトリ用 |
+
+### ローカル（conda / venv）
+
+```bash
+pip install -r requirements.txt
+python -m tsukasa_speech.app.main
+```
+
+`http://127.0.0.1:7860` を開きます。
+
+---
+
+## データフォーマット
 
 ```
-/runpod-volume/Data/
+Data/
     話者名/
         wav/
             XXXX_0001.wav
@@ -59,54 +127,50 @@ RunPod ネットワークボリュームに学習データを配置します:
 ```
 
 `transcript_utf8.txt` のフォーマット（コロン区切り）:
+
 ```
 XXXX_0001.wav:月の宝…:ツキノタカラ
 XXXX_0002.wav:空を飛びたいな:ソラヲトビタイナ
 ```
+
 フィールド: `ファイル名:日本語テキスト:読み仮名`（読み仮名は省略可）。
 
-### 2. Docker イメージのビルドとプッシュ
+---
 
-```bash
-docker build -t your-dockerhub/tsukasa-speech .
-docker push your-dockerhub/tsukasa-speech
-```
+## GPU Tier
 
-### 3. RunPod で起動
+起動時に最大 GPU の VRAM に基づいて自動検出:
 
-RunPod UI で以下を設定します:
+| Tier | VRAM | batch_size | max_len | SLM |
+|---|---|---|---|---|
+| `low` | < 24 GB | 2 | 400 | 無効 |
+| `mid` | 24 – 48 GB | 2 | 800 | 有効 |
+| `high` | >= 48 GB | 8 | 1600 | 有効 |
 
-| 設定 | 値 |
-|---|---|
-| Container Image | `your-dockerhub/tsukasa-speech` |
-| Volume Mount | `/runpod-volume`（`Data/` ディレクトリを含むネットワークボリューム） |
-| `MODEL_REPO` 環境変数 | モデル重みの HuggingFace リポジトリ ID（例: `Respair/Tsukasa_Speech`） |
-| `HF_TOKEN` 環境変数 | （任意）プライベートリポジトリ用のトークン |
+`GPU_TIER_OVERRIDE=mid` 環境変数で上書き可能。
 
-コンテナ起動時に自動で以下の処理が実行されます:
-1. HuggingFace からモデル重みをダウンロード（未取得の場合）
-2. GPU VRAM を検出して最適な設定 Tier を選択
-3. トランスクリプトをフォネマイズして `train_list.txt` / `val_list.txt` を生成
-4. ウェーブキャッシュのウォームアップ
-5. Stage 1 → Stage 2 学習を実行
+---
 
-### 4. 環境変数による制御
+## 環境変数
 
 | 変数名 | デフォルト | 説明 |
 |---|---|---|
-| `STAGE` | `all` | `1` = Stage 1 のみ, `2` = Stage 2 のみ, `all` = 両方, `shell` = デバッグシェル |
-| `GPU_TIER_OVERRIDE` | （自動検出） | `low` / `mid` / `high` — GPU 検出を上書き |
-| `N_JOBS` | `4` | 前処理の並列ワーカー数 |
+| `STAGE` | — | `1` / `2` / `all` / `shell`（デバッグシェル） |
+| `GPU_TIER_OVERRIDE` | （自動検出） | `low` / `mid` / `high` |
 | `DATA_DIR` | `Data` | データディレクトリのパス |
+| `N_JOBS` | `4` | 前処理の並列ワーカー数 |
+| `MODEL_REPO` | — | モデル重み自動 DL 用 HuggingFace リポジトリ ID |
+| `HF_TOKEN` | — | プライベートリポジトリ用 HuggingFace トークン |
+| `GRADIO_PORT` | `7860` | Gradio UI のポート |
+| `TSUKASA_CACHE_DIR` | `/tmp/wave_cache` | WAV キャッシュディレクトリ |
 
-またはボリューム上に `Data/run_config.yaml` を配置して設定できます:
+`Data/run_config.yaml` ファイルでも設定可能:
 
 ```yaml
-stage: all          # 1 | 2 | all
-val_ratio: 0.1      # 検証データの割合
-max_duration: 15.0  # この秒数を超える音声ファイルをスキップ
+stage: all
+val_ratio: 0.1
+max_duration: 15.0
 
-# ステージごとの上書き設定（任意）
 stage1:
   epochs: 100
 stage2:
@@ -115,23 +179,52 @@ stage2:
 
 ---
 
-## GPU Tier
+## CLI リファレンス
 
-コンテナが GPU を自動検出してコンフィグを選択します:
+| 用途 | コマンド |
+|---|---|
+| Gradio UI | `python -m tsukasa_speech.app.main` |
+| 学習パイプライン | `python -m tsukasa_speech.training --data-dir Data --stage all` |
+| 前処理 | `python -m tsukasa_speech.preprocessing.phonemize_data --data-dir Data` |
+| モデルダウンロード | `python -m tsukasa_speech.utils.download` |
+| GPU 検出 | `python -m tsukasa_speech.config.gpu` |
 
-| Tier | GPU VRAM | コンフィグ | batch_size | max_len | SLM |
-|---|---|---|---|---|---|
-| `low` | 20 GB 未満 | `config_low_vram.yml` | 2 | 200 | 無効 |
-| `mid` | 20〜36 GB | `config_mid_vram.yml` | 4 | 600 | 有効 |
-| `high` | 36 GB 以上 | `config_high_vram.yml` | 8 | 800 | 有効 |
+---
 
-`GPU_TIER_OVERRIDE=mid`（または `run_config.yaml` の `gpu_tier` キー）で上書き可能です。
+## リポジトリ構成
+
+```
+.
+├── tsukasa_speech/             # メイン Python パッケージ
+│   ├── app/                    # Gradio UI（推論 + 学習タブ）
+│   ├── config/                 # GPU 検出、設定マージ
+│   ├── data/                   # テキスト処理、メルスペクトログラム、DataLoader
+│   ├── diffusion/              # 拡散モデル、サンプラー
+│   ├── inference/              # モデルローダー、スタイル抽出、TTS コア
+│   ├── models/                 # モデルアーキテクチャ、ビルダー
+│   ├── preprocessing/          # フォネマイズ、スタイル DB 構築
+│   ├── training/               # 2 段階学習パイプライン
+│   ├── utils/                  # ASR, JDC, PLBERT, phonemize
+│   └── vocoder/                # ISTFTNet, HiFi-GAN
+├── Configs/                    # GPU Tier 別 YAML 設定
+│   ├── config_low_vram.yml
+│   ├── config_mid_vram.yml
+│   └── config_high_vram.yml
+├── Utils/                      # モデル重みファイルのみ
+├── train_first.py              # Stage 1 shim（accelerate launch 用）
+├── finetune_accelerate.py      # Stage 2 shim（accelerate launch 用）
+├── train.sh                    # ヘッドレス学習スクリプト
+├── entrypoint.sh               # Docker エントリーポイント（Gradio UI 起動）
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
+```
 
 ---
 
 ## モデル重み
 
-起動時に以下のファイルが必要です（`MODEL_REPO` 設定時は自動ダウンロード）:
+`MODEL_REPO` 設定時は初回起動で自動ダウンロード:
 
 | ファイル | サイズ | 説明 |
 |---|---|---|
@@ -140,65 +233,29 @@ stage2:
 | `Utils/JDC/bst.t7` | 約 21 MB | F0 ピッチ抽出器 |
 | `Utils/PLBERT/step_1050000.t7` | 約 1.8 GB | PL-BERT |
 
-ボリュームマウントでダウンロードをスキップすることもできます:
+ダウンロードをスキップするにはボリュームマウント:
+
 ```bash
 docker run ... -v /path/to/Models:/app/Models -v /path/to/Utils:/app/Utils
 ```
 
 ---
 
-## ローカル開発
+## Python API
 
-```bash
-# フルパイプライン（GPU 自動検出 → 前処理 → 学習）
-docker compose up train
+```python
+from tsukasa_speech.inference.model_loader import load_inference_model
+from tsukasa_speech.inference.style import compute_ref_style
+from tsukasa_speech.inference.core import synthesize
 
-# Stage 1 のみ
-docker compose up stage1
+# モデル読み込み
+model, model_params = load_inference_model("Models/Style_Tsukasa_v02")
 
-# Stage 2 のみ
-docker compose up stage2
+# リファレンス音声からスタイル抽出
+ref_ss, ref_sp = compute_ref_style(model, "reference.wav")
 
-# デバッグシェル
-docker compose run shell
-# コンテナ内で 'train' コマンドを実行すると学習開始
-```
-
----
-
-## リポジトリ構成
-
-```
-.
-├── train.sh                  # メイン学習パイプラインスクリプト
-├── entrypoint.sh             # コンテナエントリーポイント
-├── Dockerfile
-├── docker-compose.yml        # ローカル開発用
-│
-├── train_first.py            # Stage 1: 音響事前学習
-├── finetune_accelerate.py    # Stage 2: ジョイントファインチューニング
-├── preprocess_data.py        # フォネマイズ + データ分割
-├── detect_gpu.py             # GPU VRAM 検出 → コンフィグ Tier 選択
-├── merge_config.py           # ベースコンフィグ + ユーザー上書きのマージ
-├── download_models.py        # HuggingFace からモデル重みをダウンロード
-│
-├── models.py                 # モデルアーキテクチャ
-├── meldataset.py             # DataLoader
-├── losses.py                 # 損失関数
-├── optimizers.py             # オプティマイザービルダー
-├── utils.py                  # ユーティリティ
-│
-├── Configs/
-│   ├── config_low_vram.yml   # ~16 GB GPU 用
-│   ├── config_mid_vram.yml   # 24〜32 GB GPU 用
-│   ├── config_high_vram.yml  # 32 GB+ GPU 用
-│   └── reference/            # 参照用コンフィグ（パイプラインでは使用しない）
-│       ├── base_stage1.yml
-│       └── base_stage2.yml
-│
-├── OOD_LargeScale_.csv       # 学習用 OOD テキストデータ
-├── Utils/                    # ASR, JDC, PLBERT, フォネマイザー
-└── Modules/                  # 拡散モデル, SLM Adversarial Loss
+# 音声合成
+wav = synthesize(model, model_params, "こんにちは", ref_ss, ref_sp)
 ```
 
 ---

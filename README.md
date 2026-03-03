@@ -24,37 +24,100 @@ tags:
   <img src="https://i.postimg.cc/y6gT18Tn/Untitled-design-1.png" alt="Logo" style="width:300px; height:auto;">
 </div>
 
-# Tsukasa 司 Speech — RunPod Training Pipeline
+# Tsukasa 司 Speech
 
-This repository is a **self-training/fine-tuning pipeline** for Tsukasa Speech, packaged as a Docker image for use on [RunPod](https://runpod.io) or any CUDA-capable host.
+Japanese TTS model with training pipeline, Gradio UI, and Docker support.
 
 日本語版 README は [README_JP.md](README_JP.md)。
 
-Original model card / demo: [Respair/Tsukasa_Speech](https://huggingface.co/Respair/Tsukasa_Speech)
+Original model / demo: [Respair/Tsukasa_Speech](https://huggingface.co/Respair/Tsukasa_Speech)
 
 ---
 
 ## What is Tsukasa Speech?
 
-A Japanese TTS model built on [StyleTTS 2](https://github.com/yl4579/StyleTTS2) with the following additions:
+A Japanese text-to-speech model built on [StyleTTS 2](https://github.com/yl4579/StyleTTS2) with:
 
-- mLSTM layers (xLSTM) instead of standard LSTM in the text/prosody encoders
-- Whisper Large v2 encoder as the SLM discriminator (instead of WavLM)
-- Retrained PL-BERT, F0 pitch extractor, and text aligner from scratch
-- ISTFTNet decoder at 24 kHz
-- Promptable style transfer
-- Smart mixed Japanese/Romaji phonemization
+- **mLSTM (xLSTM)** layers instead of standard LSTM in the text/prosody encoders
+- **Whisper Large v2** encoder as the SLM discriminator (replaces WavLM)
+- **PL-BERT, F0 extractor, and text aligner** retrained from scratch for Japanese
+- **ISTFTNet** decoder at 24 kHz
+- **Promptable style transfer** via reference audio or style database lookup
+- **Smart mixed phonemizer** supporting Japanese + Romaji input
 
 ---
 
-## Quick Start (RunPod)
+## Features
 
-### 1. Prepare data
+### Gradio UI
 
-Place training data on your RunPod network volume:
+Two-tab web interface (`http://localhost:7860`):
+
+- **Inference tab** — text-to-speech synthesis with reference audio, style DB lookup, pitch editor, and sentence splitting
+- **Training tab** — data preprocessing, Stage 1 / Stage 2 training, and progress monitoring from the browser
+
+### Training Pipeline
+
+Two-stage training with automatic GPU detection:
+
+1. **Stage 1** — acoustic pre-training (text encoder, style encoder, decoder)
+2. **Stage 2** — joint fine-tuning with SLM adversarial loss and diffusion decoder
+
+### Style System
+
+- **Reference audio** — extract style from any WAV file
+- **Style database** — precomputed per-speaker style vectors for text-similarity lookup
+- **Pitch editor** — interactive F0 curve editing before final synthesis
+
+---
+
+## Quick Start
+
+### Docker (recommended)
+
+```bash
+docker compose up
+```
+
+Open `http://localhost:7860` for the Gradio UI. Place your training data in `./Data/` (auto-mounted).
+
+To provide model weights, either:
+- Mount local files: place `Models/` and `Utils/` weight files in the repo root
+- Set `MODEL_REPO` env var for automatic HuggingFace download
+
+### RunPod
+
+```bash
+# Build and push
+docker build -t your-dockerhub/tsukasa-speech .
+docker push your-dockerhub/tsukasa-speech
+```
+
+In the RunPod UI:
+
+| Setting | Value |
+|---|---|
+| Container Image | `your-dockerhub/tsukasa-speech` |
+| Volume Mount | `/runpod-volume` (network volume with `Data/` directory) |
+| HTTP Port | `7860` (Gradio UI), `6006` (TensorBoard) |
+| `MODEL_REPO` env | HuggingFace repo ID (e.g. `Respair/Tsukasa_Speech`) |
+| `HF_TOKEN` env | (optional) for private repos |
+
+### Local (conda / venv)
+
+```bash
+pip install -r requirements.txt
+python -m tsukasa_speech.app.main
+```
+
+Open `http://127.0.0.1:7860`.
+
+---
+
+## Data Format
 
 ```
-/runpod-volume/Data/
+Data/
     speaker_name/
         wav/
             XXXX_0001.wav
@@ -64,54 +127,50 @@ Place training data on your RunPod network volume:
 ```
 
 `transcript_utf8.txt` format (colon-separated):
+
 ```
 XXXX_0001.wav:月の宝…:ツキノタカラ
 XXXX_0002.wav:空を飛びたいな:ソラヲトビタイナ
 ```
-Fields: `filename:japanese_text:reading` (the reading column is optional and can be omitted).
 
-### 2. Build and push the Docker image
+Fields: `filename:japanese_text:reading` (the reading column is optional).
 
-```bash
-docker build -t your-dockerhub/tsukasa-speech .
-docker push your-dockerhub/tsukasa-speech
-```
+---
 
-### 3. Launch on RunPod
+## GPU Tiers
 
-In the RunPod UI:
+Auto-detected at startup based on the largest single GPU's VRAM:
 
-| Setting | Value |
-|---|---|
-| Container Image | `your-dockerhub/tsukasa-speech` |
-| Volume Mount | `/runpod-volume` (network volume with your `Data/` directory) |
-| `MODEL_REPO` env | HuggingFace repo ID for model weights (e.g. `Respair/Tsukasa_Speech`) |
-| `HF_TOKEN` env | (optional) for private repos |
+| Tier | VRAM | batch_size | max_len | SLM |
+|---|---|---|---|---|
+| `low` | < 24 GB | 2 | 400 | disabled |
+| `mid` | 24 – 48 GB | 2 | 800 | enabled |
+| `high` | >= 48 GB | 8 | 1600 | enabled |
 
-On startup the container will automatically:
-1. Download missing model weights from HuggingFace
-2. Detect GPU VRAM and select the appropriate config tier
-3. Phonemize transcripts and build `train_list.txt` / `val_list.txt`
-4. Pre-warm the wave cache
-5. Run Stage 1 → Stage 2 training
+Override with `GPU_TIER_OVERRIDE=mid` env var.
 
-### 4. Control training via environment variables
+---
+
+## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `STAGE` | `all` | `1` = Stage 1 only, `2` = Stage 2 only, `all` = both, `shell` = debug shell |
-| `GPU_TIER_OVERRIDE` | (auto-detect) | `low` / `mid` / `high` — override automatic GPU detection |
-| `N_JOBS` | `4` | Parallel workers for preprocessing |
+| `STAGE` | — | `1` / `2` / `all` / `shell` (debug shell) |
+| `GPU_TIER_OVERRIDE` | (auto-detect) | `low` / `mid` / `high` |
 | `DATA_DIR` | `Data` | Path to data directory |
+| `N_JOBS` | `4` | Parallel workers for preprocessing |
+| `MODEL_REPO` | — | HuggingFace repo ID for model weight download |
+| `HF_TOKEN` | — | HuggingFace token for private repos |
+| `GRADIO_PORT` | `7860` | Port for the Gradio UI |
+| `TSUKASA_CACHE_DIR` | `/tmp/wave_cache` | WAV cache directory |
 
-Or place a `Data/run_config.yaml` on your volume:
+You can also place a `Data/run_config.yaml` file:
 
 ```yaml
-stage: all          # 1 | 2 | all
-val_ratio: 0.1      # validation split fraction
-max_duration: 15.0  # skip audio files longer than N seconds
+stage: all
+val_ratio: 0.1
+max_duration: 15.0
 
-# per-stage overrides (optional)
 stage1:
   epochs: 100
 stage2:
@@ -120,23 +179,52 @@ stage2:
 
 ---
 
-## GPU Tiers
+## CLI Reference
 
-The container auto-detects your GPU and selects a config:
+| Purpose | Command |
+|---|---|
+| Gradio UI | `python -m tsukasa_speech.app.main` |
+| Training pipeline | `python -m tsukasa_speech.training --data-dir Data --stage all` |
+| Preprocessing | `python -m tsukasa_speech.preprocessing.phonemize_data --data-dir Data` |
+| Model download | `python -m tsukasa_speech.utils.download` |
+| GPU detection | `python -m tsukasa_speech.config.gpu` |
 
-| Tier | GPU VRAM | Config | batch_size | max_len | SLM |
-|---|---|---|---|---|---|
-| `low` | < 20 GB | `config_low_vram.yml` | 2 | 200 | disabled |
-| `mid` | 20–36 GB | `config_mid_vram.yml` | 4 | 600 | enabled |
-| `high` | ≥ 36 GB | `config_high_vram.yml` | 8 | 800 | enabled |
+---
 
-Override with `GPU_TIER_OVERRIDE=mid` (or via `run_config.yaml`).
+## Repository Structure
+
+```
+.
+├── tsukasa_speech/             # Main Python package
+│   ├── app/                    # Gradio UI (inference + training tabs)
+│   ├── config/                 # GPU detection, config merge
+│   ├── data/                   # Text processing, mel spectrograms, DataLoader
+│   ├── diffusion/              # Diffusion model, sampler
+│   ├── inference/              # Model loader, style extraction, TTS core
+│   ├── models/                 # Model architecture, builder
+│   ├── preprocessing/          # Phonemize, style DB construction
+│   ├── training/               # Two-stage training pipeline
+│   ├── utils/                  # ASR, JDC, PLBERT, phonemize
+│   └── vocoder/                # ISTFTNet, HiFi-GAN
+├── Configs/                    # GPU tier YAML configs
+│   ├── config_low_vram.yml
+│   ├── config_mid_vram.yml
+│   └── config_high_vram.yml
+├── Utils/                      # Model weight files only
+├── train_first.py              # Stage 1 shim (for accelerate launch)
+├── finetune_accelerate.py      # Stage 2 shim (for accelerate launch)
+├── train.sh                    # Headless training script
+├── entrypoint.sh               # Docker entrypoint (launches Gradio UI)
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
+```
 
 ---
 
 ## Model Weights
 
-The following files must be present at startup (downloaded automatically from `MODEL_REPO`):
+Downloaded automatically from `MODEL_REPO` at first startup:
 
 | File | Size | Description |
 |---|---|---|
@@ -145,65 +233,29 @@ The following files must be present at startup (downloaded automatically from `M
 | `Utils/JDC/bst.t7` | ~21 MB | F0 pitch extractor |
 | `Utils/PLBERT/step_1050000.t7` | ~1.8 GB | PL-BERT |
 
-To skip downloading, mount them directly:
+To skip download, mount them directly:
+
 ```bash
 docker run ... -v /path/to/Models:/app/Models -v /path/to/Utils:/app/Utils
 ```
 
 ---
 
-## Local Development
+## Python API
 
-```bash
-# Full pipeline (auto GPU detect → preprocess → train)
-docker compose up train
+```python
+from tsukasa_speech.inference.model_loader import load_inference_model
+from tsukasa_speech.inference.style import compute_ref_style
+from tsukasa_speech.inference.core import synthesize
 
-# Stage 1 only
-docker compose up stage1
+# Load model
+model, model_params = load_inference_model("Models/Style_Tsukasa_v02")
 
-# Stage 2 only
-docker compose up stage2
+# Extract style from reference audio
+ref_ss, ref_sp = compute_ref_style(model, "reference.wav")
 
-# Debug shell
-docker compose run shell
-# Inside container: run 'train' to start training
-```
-
----
-
-## Repository Structure
-
-```
-.
-├── train.sh                  # Main training pipeline script
-├── entrypoint.sh             # Container entrypoint
-├── Dockerfile
-├── docker-compose.yml        # Local development
-│
-├── train_first.py            # Stage 1: acoustic pre-training
-├── finetune_accelerate.py    # Stage 2: joint fine-tuning
-├── preprocess_data.py        # Phonemization + data split
-├── detect_gpu.py             # GPU VRAM detection → config tier
-├── merge_config.py           # Merge base config + user overrides
-├── download_models.py        # HuggingFace model weight download
-│
-├── models.py                 # Model architecture
-├── meldataset.py             # DataLoader
-├── losses.py                 # Loss functions
-├── optimizers.py             # Optimizer builder
-├── utils.py                  # Utilities
-│
-├── Configs/
-│   ├── config_low_vram.yml   # ~16 GB GPU
-│   ├── config_mid_vram.yml   # 24–32 GB GPU
-│   ├── config_high_vram.yml  # 32 GB+ GPU
-│   └── reference/            # Reference configs (not used by pipeline)
-│       ├── base_stage1.yml
-│       └── base_stage2.yml
-│
-├── OOD_LargeScale_.csv       # OOD text data for training
-├── Utils/                    # ASR, JDC, PLBERT, phonemizer
-└── Modules/                  # Diffusion, SLM adversarial loss
+# Synthesize
+wav = synthesize(model, model_params, "こんにちは", ref_ss, ref_sp)
 ```
 
 ---

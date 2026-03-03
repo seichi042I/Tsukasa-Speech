@@ -25,3 +25,4 @@ nltk
 wandb
 git+https://github.com/resemble-ai/monotonic_align.git
 gradio>=4.0.0
+plotly

@@ -311,9 +311,12 @@ def load_repr_style(style_db_path, speaker_id, device='cuda'):
 
 
 @torch.no_grad()
-def synthesize(model, model_params, text, ref_ss, ref_sp, device='cuda',
-               diffusion_steps=5, sr=24000):
-    """Run TTS pipeline: text -> waveform."""
+def predict_prosody(model, model_params, text, ref_ss, ref_sp, device='cuda',
+                    diffusion_steps=5, sr=24000, style_strength=1.0):
+    """Run TTS pipeline up to F0/energy prediction (before decoding).
+
+    Returns a dict containing intermediate tensors needed for waveform synthesis.
+    """
     text_cleaner = TextCleaner()
 
     # Phonemize
@@ -335,17 +338,26 @@ def synthesize(model, model_params, text, ref_ss, ref_sp, device='cuda',
     bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
     d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
 
-    # Step 1: Predict durations (dummy alignment — only durations needed here)
-    s_dur = ref_sp  # prosodic style from reference
+    # Dampen prosodic style toward zero for flatter prosody.
+    s_dur = ref_sp * style_strength
     T = tokens.shape[1]
     dummy_aln = torch.zeros(1, T, T, device=device)
     d, _ = model.predictor(d_en, s_dur, input_lengths,
                            alignment=dummy_aln, m=text_mask)
 
     # Build alignment from predicted durations
-    # duration_proj outputs logits; apply sigmoid before summing (matches training code)
     d_rounded = torch.clamp(torch.round(torch.sigmoid(d).sum(axis=-1)), min=1)
     d_int = d_rounded.long().squeeze(0)
+
+    # Fix boundary tokens
+    d_int[0] = 10
+    d_int[-1] = 0
+
+    # Cap per-token duration
+    real = d_int[1:-1]
+    if real.numel() > 0:
+        dur_cap = int(torch.clamp(real.float().median() * 3, min=0, max=50).item())
+        d_int[1:-1] = torch.clamp(real, max=dur_cap)
 
     total_mel_len = d_int.sum().item()
     alignment = torch.zeros(1, T, int(total_mel_len), device=device)
@@ -357,15 +369,14 @@ def synthesize(model, model_params, text, ref_ss, ref_sp, device='cuda',
         asr_aligned[0, :, pos:pos+dur] = t_en[0, :, j:j+1].expand(-1, dur)
         pos += dur
 
-    # Step 2: Re-run predictor with real alignment to get aligned DurationEncoder
-    # features (p_en, 640-dim) needed for F0 prediction
+    # Re-run predictor with real alignment for F0 prediction
     _, p_en = model.predictor(d_en, s_dur, input_lengths,
                               alignment=alignment, m=text_mask)
 
-    # Step 3: Predict F0 and energy norm
+    # Predict F0 and energy norm
     F0_fake, N_fake = model.predictor(texts=p_en, style=s_dur, f0=True)
 
-    # Diffusion-based style refinement (optional)
+    # Diffusion-based style refinement
     multispeaker = model_params.multispeaker
     if diffusion_steps > 0:
         sampler = DiffusionSampler(
@@ -374,38 +385,156 @@ def synthesize(model, model_params, text, ref_ss, ref_sp, device='cuda',
             sigma_schedule=KarrasSchedule(sigma_min=0.0001, sigma_max=3.0, rho=9.0),
             clamp=False,
         )
-        ref = torch.cat([ref_ss, ref_sp], dim=1)
-        noise = torch.randn(1, 1, ref_ss.shape[-1] + ref_sp.shape[-1], device=device)
+        ref = torch.cat([ref_ss, s_dur], dim=1)
+        noise = torch.randn(1, 1, ref_ss.shape[-1] + s_dur.shape[-1], device=device)
 
         if multispeaker:
             s_preds = sampler(
-                noise=noise,
-                embedding=bert_dur,
-                embedding_scale=1,
-                features=ref,
-                embedding_mask_proba=0.1,
-                num_steps=diffusion_steps,
+                noise=noise, embedding=bert_dur, embedding_scale=1,
+                features=ref, embedding_mask_proba=0.1, num_steps=diffusion_steps,
             ).squeeze(1)
         else:
             s_preds = sampler(
-                noise=noise,
-                embedding=bert_dur,
-                embedding_scale=1,
-                embedding_mask_proba=0.1,
-                num_steps=diffusion_steps,
+                noise=noise, embedding=bert_dur, embedding_scale=1,
+                embedding_mask_proba=0.1, num_steps=diffusion_steps,
             ).squeeze(1)
 
-        # Split predicted style into acoustic + prosodic
         style_dim = ref_ss.shape[-1]
         s_acoustic = s_preds[:, :style_dim]
     else:
         s_acoustic = ref_ss
 
-    # Decode to waveform
-    y_rec = model.decoder(asr_aligned, F0_fake, N_fake, s_acoustic)
+    # Build phoneme boundary info for the editor
+    # d_int values are downsampled by 2x from mel frames, so multiply by 2
+    # to align with the F0/N arrays which are at full mel-frame resolution.
+    phoneme_chars = list(phonemized)
+    phonemes = []
+    pos = d_int[0].item() * 2  # skip start token duration
+    for k, ch in enumerate(phoneme_chars):
+        if k + 1 < len(d_int):
+            dur = d_int[k + 1].item() * 2
+            phonemes.append({'label': ch, 'start_frame': pos, 'end_frame': pos + dur})
+            pos += dur
 
+    return {
+        'F0': F0_fake,
+        'N': N_fake,
+        'F0_original': F0_fake.clone(),
+        'N_original': N_fake.clone(),
+        'asr_aligned': asr_aligned,
+        's_acoustic': s_acoustic,
+        'd_int': d_int,
+        'phonemes': phonemes,
+        'phonemized': phonemized,
+        'sr': sr,
+    }
+
+
+@torch.no_grad()
+def synthesize_from_prosody(model, prosody_state):
+    """Decode waveform from pre-computed prosody state."""
+    F0 = prosody_state['F0']
+    N = prosody_state['N']
+    asr_aligned = prosody_state['asr_aligned']
+    s_acoustic = prosody_state['s_acoustic']
+    sr = prosody_state['sr']
+
+    y_rec = model.decoder(asr_aligned, F0, N, s_acoustic)
     wav = y_rec.cpu().numpy().squeeze()
+
+    # Trim trailing silence / low-energy artifacts.
+    frame_len = int(sr * 0.02)
+    energy_threshold = 0.01
+    end = len(wav)
+    while end > frame_len:
+        frame = wav[end - frame_len:end]
+        if np.abs(frame).mean() > energy_threshold:
+            break
+        end -= frame_len
+    if end < len(wav):
+        fade_samples = int(sr * 0.005)
+        end = min(end + fade_samples, len(wav))
+        wav = wav[:end]
+        wav[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+
     return wav
+
+
+@torch.no_grad()
+def synthesize(model, model_params, text, ref_ss, ref_sp, device='cuda',
+               diffusion_steps=5, sr=24000, style_strength=1.0):
+    """Run TTS pipeline: text -> waveform (backward-compatible wrapper)."""
+    state = predict_prosody(model, model_params, text, ref_ss, ref_sp,
+                            device=device, diffusion_steps=diffusion_steps,
+                            sr=sr, style_strength=style_strength)
+    return synthesize_from_prosody(model, state)
+
+
+def create_f0_plot(prosody_states, hop_length=300):
+    """Create a Plotly figure showing F0 curves for all sentences.
+
+    Args:
+        prosody_states: list of dicts from predict_prosody()
+        hop_length: hop length in samples (default 300 for 24kHz / 80fps)
+
+    Returns:
+        plotly Figure
+    """
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    frame_offset = 0
+
+    for i, state in enumerate(prosody_states):
+        sr = state['sr']
+        f0 = state['F0'].squeeze().cpu().numpy()
+        n_frames = len(f0)
+
+        # Time axis in seconds
+        times = (np.arange(n_frames) + frame_offset) * hop_length / sr
+
+        # Original F0 (thin grey dashed)
+        if 'F0_original' in state:
+            f0_orig = state['F0_original'].squeeze().cpu().numpy()
+            has_diff = not np.allclose(f0, f0_orig, atol=1e-6)
+            if has_diff:
+                fig.add_trace(go.Scatter(
+                    x=times, y=f0_orig,
+                    mode='lines',
+                    line=dict(color='rgba(150,150,150,0.5)', width=1, dash='dash'),
+                    name=f'文{i+1} (原本)',
+                    showlegend=True,
+                ))
+
+        # Current F0 (solid blue)
+        fig.add_trace(go.Scatter(
+            x=times, y=f0,
+            mode='lines',
+            line=dict(color='#1f77b4', width=2),
+            name=f'文{i+1}',
+        ))
+
+        # Sentence boundary
+        if i > 0:
+            boundary_time = frame_offset * hop_length / sr
+            fig.add_vline(
+                x=boundary_time,
+                line_dash='dash',
+                line_color='rgba(100,100,100,0.4)',
+                annotation_text=f'文{i+1}',
+                annotation_position='top',
+            )
+
+        frame_offset += n_frames
+
+    fig.update_layout(
+        xaxis_title='時間 (秒)',
+        yaxis_title='F0',
+        height=250,
+        margin=dict(l=50, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    return fig
 
 
 def main():
@@ -423,6 +552,8 @@ def main():
     parser.add_argument('--text', '-t', required=True, help='Text to synthesize')
     parser.add_argument('--output', '-o', default='output.wav', help='Output WAV path')
     parser.add_argument('--diffusion-steps', type=int, default=5, help='Number of diffusion steps (0 to skip)')
+    parser.add_argument('--style-strength', type=float, default=1.0,
+                        help='Prosodic style strength 0.0–1.0 (0=flat, 1=full style)')
     parser.add_argument('--device', default='cuda', help='Device (cuda or cpu)')
     args = parser.parse_args()
 
@@ -478,6 +609,7 @@ def main():
         device=device,
         diffusion_steps=args.diffusion_steps,
         sr=sr,
+        style_strength=args.style_strength,
     )
 
     sf.write(args.output, wav, sr)

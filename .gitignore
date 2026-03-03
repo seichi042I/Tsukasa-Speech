@@ -9,6 +9,7 @@ Data/IORI
 # Model checkpoints (large files tracked via Git LFS or separately)
 Models/IORI_Finetuned/
 *.pth
+Models/Style_Tsukasa_v02/style_db.pt
 
 # OOD data (large CSV)
 OOD_LargeScale_.csv

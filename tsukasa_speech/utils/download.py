@@ -19,12 +19,15 @@ import argparse
 import os
 import sys
 
-# Model weight files required for training (relative to /app)
+# Model weight files required for training/inference (relative to /app)
 REQUIRED_MODELS = [
-    "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth",  # 2.0GB - pretrained checkpoint
-    "Utils/ASR/bst_00080.pth",                        # 91MB  - ASR model
-    "Utils/JDC/bst.t7",                                # 21MB  - F0 pitch extractor
-    "Utils/PLBERT/step_1050000.t7",                    # 1.8GB - PL-BERT
+    "Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth",    # 2.0GB - pretrained checkpoint
+    "Models/Style_Tsukasa_v02/config_kanade.yml",      # config (needed for model discovery)
+    "Utils/ASR/bst_00080.pth",                          # 91MB  - ASR model
+    "Utils/ASR/config.yml",                              # ASR config
+    "Utils/JDC/bst.t7",                                  # 21MB  - F0 pitch extractor
+    "Utils/PLBERT/step_1050000.t7",                      # 1.8GB - PL-BERT
+    "Utils/PLBERT/config.yml",                            # PLBERT config
 ]
 
 
@@ -43,9 +46,12 @@ def download_from_hf(repo_id, base_dir=".", token=None):
 
     Expected repo structure (mirrors local paths):
       Models/Style_Tsukasa_v02/Top_ckpt_24khz.pth
+      Models/Style_Tsukasa_v02/config_kanade.yml
       Utils/ASR/bst_00080.pth
+      Utils/ASR/config.yml
       Utils/JDC/bst.t7
       Utils/PLBERT/step_1050000.t7
+      Utils/PLBERT/config.yml
     """
     from huggingface_hub import hf_hub_download
 

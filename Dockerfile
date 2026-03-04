@@ -43,6 +43,8 @@ WORKDIR /app
 COPY tsukasa_speech/ tsukasa_speech/
 COPY Utils/ Utils/
 COPY Configs/ Configs/
+COPY static/ static/
+COPY reference_sample_wavs/ reference_sample_wavs/
 COPY OOD_LargeScale_.csv .
 
 # Layer 2: Accelerate shims + entrypoints (changes frequently)

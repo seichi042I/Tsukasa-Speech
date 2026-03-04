@@ -94,6 +94,21 @@ def split_sentences(text, min_chunk=25):
     return sentences
 
 
+def discover_ref_voices():
+    """Scan reference_sample_wavs/ for preset reference audio files.
+
+    Returns list of (display_name, file_path) tuples for Gradio dropdown.
+    """
+    ref_dir = "reference_sample_wavs"
+    voices = []
+    if osp.isdir(ref_dir):
+        for fname in sorted(os.listdir(ref_dir)):
+            if fname.lower().endswith(('.wav', '.ogg', '.flac', '.mp3')):
+                label = osp.splitext(fname)[0]
+                voices.append((label, osp.join(ref_dir, fname)))
+    return voices
+
+
 def discover_model_dirs():
     """Scan Models/ and Data/*/output/ for valid model directories.
 
@@ -137,9 +152,13 @@ def discover_model_dirs():
 # ---------------------------------------------------------------------------
 
 def load_model_handler(model_dir):
-    """Load a model from the selected directory."""
+    """Load a model from the selected directory.
+
+    Returns (status_text, style_mode_update) where style_mode_update
+    dynamically adjusts available style modes based on style_db presence.
+    """
     if not model_dir:
-        return "モデルディレクトリを選択してください。"
+        return "モデルディレクトリを選択してください。", gr.update()
 
     try:
         config_path, checkpoint_path, style_db_path = resolve_model_dir(model_dir)
@@ -162,19 +181,29 @@ def load_model_handler(model_dir):
             n_entries = db_meta['bert_embeds'].shape[0]
             style_info = f"Style DB: {style_db_path} ({db_type}, {n_entries}エントリ)"
             del db_meta
+            style_mode_update = gr.update(
+                choices=["代表スタイル", "テキスト類似検索", "リファレンス音声"],
+                value="代表スタイル",
+            )
         else:
-            style_info = "Style DB: なし"
-        return (
+            style_info = "Style DB: なし (リファレンス音声モードのみ)"
+            style_mode_update = gr.update(
+                choices=["リファレンス音声"],
+                value="リファレンス音声",
+            )
+
+        status = (
             f"読み込み完了: {model_dir}\n"
             f"デバイス: {device} | SR: {sr}\n"
             f"{style_info}"
         )
+        return status, style_mode_update
     except Exception as e:
-        return f"読み込みエラー: {e}"
+        return f"読み込みエラー: {e}", gr.update()
 
 
-def generate_handler(text, style_mode, speaker_id, ref_audio, diffusion_steps, style_strength,
-                     prosody_states, editor_data=None):
+def generate_handler(text, style_mode, speaker_id, ref_audio, ref_voice_path,
+                     diffusion_steps, style_strength, prosody_states, editor_data=None):
     """Generate speech from text.  Uses pre-computed prosody if available.
 
     If *editor_data* is provided (from F0Editor component), edited F0/N values
@@ -233,9 +262,10 @@ def generate_handler(text, style_mode, speaker_id, ref_audio, diffusion_steps, s
             if style_db_path is None:
                 return None, phonemized, "エラー: Style DBが見つかりません。テキスト類似検索は利用できません。"
         elif style_mode == "リファレンス音声":
-            if ref_audio is None:
-                return None, phonemized, "エラー: リファレンス音声をアップロードしてください。"
-            shared_style = compute_ref_style(model, ref_audio, sr=sr, device=device)
+            effective_ref = ref_audio or ref_voice_path
+            if effective_ref is None:
+                return None, phonemized, "エラー: リファレンス音声を選択またはアップロードしてください。"
+            shared_style = compute_ref_style(model, effective_ref, sr=sr, device=device)
         else:
             return None, phonemized, f"エラー: 不明なスタイルモード: {style_mode}"
 
@@ -276,11 +306,12 @@ def generate_handler(text, style_mode, speaker_id, ref_audio, diffusion_steps, s
 
 
 def toggle_ref_audio(style_mode):
-    """Show/hide reference audio based on style mode."""
-    return gr.update(visible=(style_mode == "リファレンス音声"))
+    """Show/hide reference audio and preset voice dropdown based on style mode."""
+    vis = style_mode == "リファレンス音声"
+    return gr.update(visible=vis), gr.update(visible=vis)
 
 
-def preview_handler(text, style_mode, speaker_id, ref_audio, diffusion_steps, style_strength):
+def preview_handler(text, style_mode, speaker_id, ref_audio, ref_voice_path, diffusion_steps, style_strength):
     """Predict prosody (F0/energy) without decoding to waveform.
 
     Returns: (editor_data, prosody_states, phonemized, status)
@@ -312,9 +343,10 @@ def preview_handler(text, style_mode, speaker_id, ref_audio, diffusion_steps, st
             if style_db_path is None:
                 return None, None, "", "エラー: Style DBが見つかりません。"
         elif style_mode == "リファレンス音声":
-            if ref_audio is None:
-                return None, None, "", "エラー: リファレンス音声をアップロードしてください。"
-            shared_style = compute_ref_style(model, ref_audio, sr=sr, device=device)
+            effective_ref = ref_audio or ref_voice_path
+            if effective_ref is None:
+                return None, None, "", "エラー: リファレンス音声を選択またはアップロードしてください。"
+            shared_style = compute_ref_style(model, effective_ref, sr=sr, device=device)
         else:
             return None, None, "", f"エラー: 不明なスタイルモード: {style_mode}"
 
@@ -468,8 +500,13 @@ def build_inference_tab():
                 label="スタイルモード",
             )
             speaker_id = gr.Number(value=0, label="話者ID", precision=0)
+            ref_voice_dropdown = gr.Dropdown(
+                choices=discover_ref_voices(),
+                label="プリセット音声",
+                visible=False,
+            )
             ref_audio = gr.Audio(
-                label="リファレンス音声",
+                label="リファレンス音声 (アップロード優先)",
                 type="filepath",
                 visible=False,
             )
@@ -512,13 +549,13 @@ def build_inference_tab():
     load_btn.click(
         fn=load_model_handler,
         inputs=[model_dir],
-        outputs=[model_status],
+        outputs=[model_status, style_mode],
     )
 
     # Preview: Python predicts prosody -> editor_data -> gr.JSON -> .then(js) -> Canvas
     preview_btn.click(
         fn=preview_handler,
-        inputs=[text_input, style_mode, speaker_id, ref_audio, diffusion_steps, style_strength],
+        inputs=[text_input, style_mode, speaker_id, ref_audio, ref_voice_dropdown, diffusion_steps, style_strength],
         outputs=[editor_json, prosody_state, phoneme_output, gen_status],
     ).then(
         fn=lambda d: d,
@@ -538,7 +575,7 @@ def build_inference_tab():
         js="(data) => { return window.f0Canvas ? window.f0Canvas.getData() : data; }",
     ).then(
         fn=generate_handler,
-        inputs=[text_input, style_mode, speaker_id, ref_audio,
+        inputs=[text_input, style_mode, speaker_id, ref_audio, ref_voice_dropdown,
                 diffusion_steps, style_strength, prosody_state, editor_json],
         outputs=[audio_output, phoneme_output, gen_status],
     )
@@ -550,11 +587,11 @@ def build_inference_tab():
     style_mode.change(
         fn=toggle_ref_audio,
         inputs=[style_mode],
-        outputs=[ref_audio],
+        outputs=[ref_audio, ref_voice_dropdown],
     )
 
     # Invalidate prosody_states when inputs change
-    invalidate_inputs = [text_input, style_mode, speaker_id, ref_audio, diffusion_steps, style_strength]
+    invalidate_inputs = [text_input, style_mode, speaker_id, ref_audio, ref_voice_dropdown, diffusion_steps, style_strength]
     for component in invalidate_inputs:
         component.change(
             fn=lambda: None,

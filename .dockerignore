@@ -8,7 +8,6 @@ Data/
 
 # Not needed in training image
 Inference/
-reference_sample_wavs/
 app_tsuka.py
 *.md
 .claude/
